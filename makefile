@@ -2,7 +2,8 @@ CC = g++
 CFLAGS = -Wall -Wextra -O2
 
 SRC = main.c \
-      core/monitor/cpu_utilize.c
+      core/monitor/cpu_utilize.cpp \
+	  core/monitor/energy.cpp
 
 OBJ = $(SRC:.c=.o)
 
@@ -19,7 +20,7 @@ $(TARGET): $(OBJ)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 run: $(TARGET)
-	./$(TARGET)
+	sudo ./$(TARGET)
 
 clean:
 	rm -f $(OBJ) $(TARGET)
