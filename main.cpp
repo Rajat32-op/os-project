@@ -7,7 +7,7 @@ int main(){
     printf("hello from main\n");
     CpuUtilizationMonitor cpu_util_monitor ;
     // while(1){
-    //     double res=cpu_util_monitor.monitor_full_cpu_util();
+    //     double res=cpu_util_monitor.monitorFullCpuUtil();
     //     if(res==-1.0){
     //         return 1;
     //     }
@@ -15,7 +15,7 @@ int main(){
     //     sleep(1);
     // }
     while (1) {
-    std::vector<double> res = cpu_util_monitor.monitor_core_cpu_util();
+    std::vector<double> res = cpu_util_monitor.monitorCoreCpuUtil();
     if (res.empty() || res[0] == -1.0) {
         return 1;
     }
