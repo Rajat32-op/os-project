@@ -1,5 +1,6 @@
 #ifndef CPU_MONITOR_HPP
 #define CPU_MONITOR_HPP
+#include <vector>
 
 struct cpu_util_data{
     unsigned long long int user; //time spent running normal user space processes
@@ -13,12 +14,16 @@ struct cpu_util_data{
 };
 class CpuUtilizationMonitor{
 private:
-    cpu_util_data prev;
-    cpu_util_data cur;
+    cpu_util_data full_prev;
+    cpu_util_data full_cur;
+    std::vector<cpu_util_data>core_prev;
+    std::vector<cpu_util_data>core_cur;
     int initialised=0;
     int read_full_cpu_util(cpu_util_data *);
+    int read_core_cpu_util(std::vector<cpu_util_data>&data);
 public:
     double monitor_full_cpu_util();
+    std::vector<double>monitor_core_cpu_util();
 };
 
 #endif
