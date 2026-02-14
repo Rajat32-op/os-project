@@ -19,11 +19,11 @@ private:
     std::vector<cpu_util_data>core_prev;
     std::vector<cpu_util_data>core_cur;
     int initialised=0;
-    int read_full_cpu_util(cpu_util_data *);
-    int read_core_cpu_util(std::vector<cpu_util_data>&data);
+    int readFullCpuUtil(cpu_util_data *);
+    int readCoreCpuUtil(std::vector<cpu_util_data>&data);
 public:
-    double monitor_full_cpu_util();
-    std::vector<double>monitor_core_cpu_util();
+    double monitorFullCpuUtil();
+    std::vector<double>monitorCoreCpuUtil();
 };
 
 #endif

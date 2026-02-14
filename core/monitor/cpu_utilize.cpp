@@ -4,7 +4,7 @@
 #include<string.h>
 #include "cpu_utilize.h"
 
-int CpuUtilizationMonitor::read_full_cpu_util(cpu_util_data *data)
+int CpuUtilizationMonitor::readFullCpuUtil(cpu_util_data *data)
 {
     FILE *fd = fopen("/proc/stat", "r");
     if (!fd)
@@ -23,7 +23,7 @@ int CpuUtilizationMonitor::read_full_cpu_util(cpu_util_data *data)
     return 0;
 }
 
-int CpuUtilizationMonitor::read_core_cpu_util(std::vector<cpu_util_data>&data){
+int CpuUtilizationMonitor::readCoreCpuUtil(std::vector<cpu_util_data>&data){
     FILE *fd=fopen("/proc/stat","r");
     if(!fd){
         printf("Could not open /proc/stat file\n");
@@ -46,11 +46,11 @@ int CpuUtilizationMonitor::read_core_cpu_util(std::vector<cpu_util_data>&data){
     return 0;
 }
 
-double CpuUtilizationMonitor::monitor_full_cpu_util()
+double CpuUtilizationMonitor::monitorFullCpuUtil()
 {
     if (initialised == 0)
     {
-        int res=read_full_cpu_util(&full_prev);
+        int res=readFullCpuUtil(&full_prev);
         if(res!=-1){
             initialised=1;
             sleep(1);
@@ -59,7 +59,7 @@ double CpuUtilizationMonitor::monitor_full_cpu_util()
             return -1;
         }
     }
-    int res = read_full_cpu_util(&full_cur);
+    int res = readFullCpuUtil(&full_cur);
     if (res == -1)
     {
         printf("Check if init\n");
@@ -85,12 +85,12 @@ double CpuUtilizationMonitor::monitor_full_cpu_util()
     return usage;
 }
 
-std::vector<double> CpuUtilizationMonitor::monitor_core_cpu_util(){
+std::vector<double> CpuUtilizationMonitor::monitorCoreCpuUtil(){
     if(core_cur.size()==0){
         int cores = sysconf(_SC_NPROCESSORS_ONLN);   //only cores which aren't disabled
         core_cur.resize(cores);
         core_prev.resize(cores);
-        int res=read_core_cpu_util(core_prev);
+        int res=readCoreCpuUtil(core_prev);
         if(res!=-1){
             sleep(1);
         }
@@ -100,7 +100,7 @@ std::vector<double> CpuUtilizationMonitor::monitor_core_cpu_util(){
 
     }
 
-    int res=read_core_cpu_util(core_cur);
+    int res=readCoreCpuUtil(core_cur);
     int n=core_cur.size();
     std::vector<double>usage(n);
     for(int i=0;i<n;i++){
