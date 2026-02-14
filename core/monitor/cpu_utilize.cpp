@@ -37,7 +37,6 @@ int CpuUtilizationMonitor::readCoreCpuUtil(std::vector<cpu_util_data>&data){
         if(strncmp(buffer,"cpu",3)!=0)break;
         if(buffer[3]==' ')continue;
 
-        cpu_util_data core;
         sscanf(buffer,"cpu%*d %llu %llu %llu %llu %llu %llu %llu %llu",
         &data[i].user, &data[i].nice, &data[i].system, &data[i].idle, &data[i].iowait, &data[i].irq, &data[i].softirq, &data[i].steal);
         i++;
@@ -101,6 +100,9 @@ std::vector<double> CpuUtilizationMonitor::monitorCoreCpuUtil(){
     }
 
     int res=readCoreCpuUtil(core_cur);
+    if(res==-1){
+        return {-1.0};
+    }
     int n=core_cur.size();
     std::vector<double>usage(n);
     for(int i=0;i<n;i++){
