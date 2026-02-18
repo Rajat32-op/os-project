@@ -14,16 +14,17 @@ struct cpu_util_data{
 };
 class CpuUtilizationMonitor{
 private:
-    cpu_util_data full_prev;
-    cpu_util_data full_cur;
-    std::vector<cpu_util_data>core_prev;
-    std::vector<cpu_util_data>core_cur;
-    int initialised=0;
-    int readFullCpuUtil(cpu_util_data *);
-    int readCoreCpuUtil(std::vector<cpu_util_data>&data);
+cpu_util_data full;
+std::vector<cpu_util_data>core;
+int readFullCpuUtil(cpu_util_data *);
+int readCoreCpuUtil(std::vector<cpu_util_data>&data);
 public:
-    double monitorFullCpuUtil();
-    std::vector<double>monitorCoreCpuUtil();
+    unsigned long long full_total;
+    unsigned long long full_active;
+    std::vector<unsigned long long>core_total;
+    std::vector<unsigned long long>core_active;
+    void monitorFullCpuUtil();
+    void monitorCoreCpuUtil();
 };
 
 #endif
