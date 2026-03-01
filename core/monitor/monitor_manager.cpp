@@ -1,97 +1,135 @@
-#include "monitor_manager.h"
-#include <fstream>
-#include <iostream>
-#include <sys/stat.h>
-#include <fcntl.h>
+#include"monitor_manager.h"
+#include<unistd.h>
+#include<sys/wait.h>
+#include<fcntl.h>
+#include<signal.h>
+#include<vector>
+#include<sstream>
 
-void MonitorManager::takeSnapShot(snapShot &snap){
-    snap.cpu_util_monitor.monitorCoreCpuUtil();
-    snap.cpu_util_monitor.monitorFullCpuUtil();
-    snap.energy_monitor.monitorEnergy();
-    auto now = std::chrono::steady_clock::now();
-
-    int ms =std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count();
-    snap.timestamp = ms;
+MonitorManager::MonitorManager(){
+    turbostat_pid=-1;
+    running=false;
+    fifo_fd=-1;
+    pipefd[0]=-1;
+    pipefd[1]=-1;
 }
 
-systemMetric MonitorManager::getMetric(){
-    systemMetric s;
+MonitorManager::~MonitorManager(){
+    stop();
+}
 
-    if(cur.energy_monitor.energy<prev.energy_monitor.energy){
-        s.energy=(cur.energy_monitor.max_energy-prev.energy_monitor.energy)+cur.energy_monitor.energy;
-    }else{
-        s.energy=cur.energy_monitor.energy-prev.energy_monitor.energy;
+void MonitorManager::readerLoop(){
+    FILE* fd = fdopen(pipefd[0], "r");
+    if (!fd) {
+        printf("fdopen failed\n");
+        return;
     }
 
-    unsigned long long delta_active=cur.cpu_util_monitor.full_active-prev.cpu_util_monitor.full_active;
-    unsigned long long delta_total=cur.cpu_util_monitor.full_total-prev.cpu_util_monitor.full_total;
+    char buffer[4096];
+    bool skipped_header=false;
+    while (running && fgets(buffer, sizeof(buffer), fd)) {
 
-    if(delta_total==0.0){
-        s.cpu_util=0.0;
+        std::string line(buffer);
+        if(!skipped_header){
+            skipped_header=true;
+            continue;
+        }
+
+        std::stringstream ss(line);
+        std::vector<std::string> columns;
+        std::string token;
+
+        while (ss >> token) {
+            columns.push_back(token);
+        }
+
+        if (columns.size() < 7)continue;
+
+        if (columns[0] != "-")continue;
+
+        try{
+
+            double avg_mhz  = std::stod(columns[2]);
+            double busy_pct = std::stod(columns[3]);
+            double ipc      = std::stod(columns[6]);
+            
+            std::cout << "Util: " << busy_pct<< "% | Avg MHz: " << avg_mhz<< " | IPC: " << ipc << std::endl;
+            std::string json = "{";
+            json += "\"util\":" + std::to_string(busy_pct) + ",";
+            json += "\"mhz\":" + std::to_string(avg_mhz) + ",";
+            json += "\"ipc\":" + std::to_string(ipc);
+            json += "}\n";
+
+            if (fifo_fd >= 0) {
+                ssize_t bytes_written = write(fifo_fd, json.c_str(), json.size());
+                if (bytes_written < 0) {
+                    printf("Error writing to FIFO\n");
+                    running = false;
+                    break;
+                }
+            }
+        }
+        catch(const std::exception& e){
+            continue;
+        }
+    }
+
+    fclose(fd); 
+}
+
+void MonitorManager::start(){
+    if(running)return;
+
+    if(pipe(pipefd)==-1){
+        printf("Couldn't create pipe\n");
+        return;
+    }
+    
+    fifo_fd = open("config/monitor_pipe", O_WRONLY);
+    if (fifo_fd < 0) {
+        perror("FIFO open failed");
+        close(pipefd[0]);
+        close(pipefd[1]);
+        return;
+    }
+    turbostat_pid=fork();
+
+    if(turbostat_pid==0){
+        dup2(pipefd[1],STDOUT_FILENO);
+        close(pipefd[0]);
+        close(pipefd[1]);
+        execlp("turbostat","turbostat","--interval", "1","--quiet",NULL);
+        printf("Exec failed\n");
+        exit(1);
     }
     else{
-        s.cpu_util=(double)delta_active/delta_total*100;
-    }
-    s.per_core_util.resize(cur.cpu_util_monitor.core_active.size());
-    for(int i=0;i<(int)cur.cpu_util_monitor.core_active.size();i++){
-        delta_active=cur.cpu_util_monitor.core_active[i]-prev.cpu_util_monitor.core_active[i];
-        delta_total=cur.cpu_util_monitor.core_total[i]-prev.cpu_util_monitor.core_total[i];
-        if(delta_total==0.0){
-            s.per_core_util[i]=0.0;
-        }
-        else{
-            s.per_core_util[i]=(double)delta_active/delta_total*100;
-        }
-    }
-    return s;
-}
-
-void MonitorManager::monitorLoop(){
-    takeSnapShot(prev);
-    auto next = std::chrono::steady_clock::now();
-    while(running){
-        next += std::chrono::milliseconds(interval);
-        takeSnapShot(cur);
-        systemMetric s=getMetric();
-        
-        if(livestream.is_open()){
-            livestream<<"{";
-            livestream<<"\"timestamp\":"<<cur.timestamp<<",";
-            livestream<<"\"total_cpu\":"<<s.cpu_util<<",";
-            // for(int i=0;i<s.per_core_util.size();i++){
-            //     livestream<<"\"core"<<i+1<<"\""<<s.per_core_util[i]<<",";
-            // }
-            livestream<<"\"energy\":"<<s.energy;
-            livestream<<"}";
-            livestream<<std::endl;
-        }
-        prev=cur;
-        std::this_thread::sleep_until(next);
+        close(pipefd[1]); // Parent doesn't write to pipe
+        running=true;
+        reader_thread=std::thread(&MonitorManager::readerLoop,this);
     }
 }
 
-void MonitorManager::start() {
-    startTime = std::chrono::steady_clock::now();
-    running = true;
-    livestream.open("config/monitor_pipe");
-    if (!livestream.is_open()) {
-        std::cerr << "Failed to open FIFO\n";
+void MonitorManager::stop(){
+    if(!running)return;
+    running=false;
+
+    if(turbostat_pid>0){
+        kill(turbostat_pid,SIGTERM);
+        waitpid(turbostat_pid,NULL,0);
+        turbostat_pid=-1;
     }
-    else{
-        std::cout<<"Fifo opened\n";
+    if(reader_thread.joinable())reader_thread.join();
+    
+    if(pipefd[0] >= 0) {
+        close(pipefd[0]);
+        pipefd[0] = -1;
     }
-
-    monitor_thread = std::thread(&MonitorManager::monitorLoop, this);
+    if(pipefd[1] >= 0) {
+        close(pipefd[1]);
+        pipefd[1] = -1;
+    }
+    if (fifo_fd >= 0) {
+        close(fifo_fd);
+        fifo_fd = -1;
+    }
 }
-
-void MonitorManager::stop() {
-
-    running = false;
-
-    if (monitor_thread.joinable())
-        monitor_thread.join();
-
-    if (livestream.is_open())
-        livestream.close();
-}
-
