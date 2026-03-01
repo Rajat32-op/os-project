@@ -2,8 +2,6 @@ CC = g++
 CFLAGS = -Wall -Wextra -O2 -std=c++17
 
 SRC = main.cpp \
-      core/monitor/cpu_utilize.cpp \
-      core/monitor/energy.cpp \
       core/monitor/monitor_manager.cpp
 
 OBJ = $(SRC:.cpp=.o)
@@ -32,7 +30,7 @@ setup:
 run: all setup
 	@echo "Starting Python GUI..."
 	@python3 interface/monitor.py & \
-	sleep 1; \
+	sleep 2; \
 	echo "Starting C++ monitor..."; \
 	sudo -E ./$(TARGET)
 
