@@ -3,6 +3,7 @@
 #include<sys/wait.h>
 #include<fcntl.h>
 #include<signal.h>
+#include<errno.h>
 #include<vector>
 #include<sstream>
 
@@ -16,6 +17,10 @@ MonitorManager::MonitorManager(){
 
 MonitorManager::~MonitorManager(){
     stop();
+    if (fifo_fd >= 0) {
+        close(fifo_fd);
+        fifo_fd = -1;
+    }
 }
 
 void MonitorManager::readerLoop(){
@@ -29,11 +34,11 @@ void MonitorManager::readerLoop(){
     bool skipped_header=false;
     while (running && fgets(buffer, sizeof(buffer), fd)) {
 
-        std::string line(buffer);
         if(!skipped_header){
             skipped_header=true;
             continue;
         }
+        std::string line(buffer);
 
         std::stringstream ss(line);
         std::vector<std::string> columns;
@@ -84,13 +89,16 @@ void MonitorManager::start(){
         printf("Couldn't create pipe\n");
         return;
     }
-    
-    fifo_fd = open("config/monitor_pipe", O_WRONLY);
+
+    // Open monitor FIFO only once; keep it open across stop/start cycles
     if (fifo_fd < 0) {
-        perror("FIFO open failed");
-        close(pipefd[0]);
-        close(pipefd[1]);
-        return;
+        fifo_fd = open("config/monitor_pipe", O_WRONLY);
+        if (fifo_fd < 0) {
+            perror("FIFO open failed");
+            close(pipefd[0]);
+            close(pipefd[1]);
+            return;
+        }
     }
     turbostat_pid=fork();
 
@@ -119,7 +127,7 @@ void MonitorManager::stop(){
         turbostat_pid=-1;
     }
     if(reader_thread.joinable())reader_thread.join();
-    
+
     if(pipefd[0] >= 0) {
         close(pipefd[0]);
         pipefd[0] = -1;
@@ -127,9 +135,5 @@ void MonitorManager::stop(){
     if(pipefd[1] >= 0) {
         close(pipefd[1]);
         pipefd[1] = -1;
-    }
-    if (fifo_fd >= 0) {
-        close(fifo_fd);
-        fifo_fd = -1;
     }
 }
