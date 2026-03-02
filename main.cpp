@@ -1,20 +1,30 @@
 #include<iostream>
-#include"core/monitor/monitor_manager.h"
+#include"core/controllers/event_controller.h"
 #include<stdlib.h>
 #include<unistd.h>
+#include<signal.h>
+
+static volatile bool g_running = true;
+
+void handle_signal(int) {
+    g_running = false;
+}
 
 int main(){
 
     std::cout<<"Main started\n";
-    MonitorManager manager;
+    signal(SIGINT, handle_signal);
+    signal(SIGTERM, handle_signal);
+
+    EventController event_controller;
     std::cout << "Starting monitor...\n";
 
-    manager.start();
+    event_controller.listen();
 
-    // For now simulate workload duration
-    std::this_thread::sleep_for(std::chrono::seconds(10));
-
-    manager.stop();
+    // Block until a shutdown signal is received
+    while (g_running) {
+        pause();
+    }
 
     std::cout << "Monitoring stopped.\n";
     return 0;
