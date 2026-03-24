@@ -3,3 +3,4 @@
 os_manager
 *.out
 .vscode
+results/
