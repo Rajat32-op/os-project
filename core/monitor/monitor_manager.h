@@ -3,7 +3,10 @@
 #include <atomic>
 #include <string>
 #include <vector>
+#include <mutex>
 #include <iostream>
+#include "../classifier/classifier.h"
+#include "../policy/governor.h"
 
 struct PerfCounters {
     int fd_cycles;
@@ -19,7 +22,6 @@ private:
     std::vector<PerfCounters> perf_fds;
     int num_cpus;
 
-    // Per-CPU /proc/stat snapshot for deltas
     struct CoreStat {
         long user, nice, system, idle, iowait, irq, softirq, steal;
     };
@@ -33,23 +35,30 @@ private:
     long long   prev_energy_uj;
     bool        rapl_available;
 
-    void   readerLoop();
+    // Classifier + pin state
+    Classifier  classifier;
+    Governor    governor;
+    CpuMode     last_committed;    // track changes to avoid redundant apply()
+    std::mutex  mode_mutex;
+    bool        is_pinned;
+    CpuMode     pinned_mode;
 
-    // Readers
-    bool   readProcStat(double &util_pct, double &iowait_pct, double &ctxsw_rate,
+    void   readerLoop();
+    bool   readProcStat(double &util, double &iowait, double &ctxsw,
                         std::vector<double> &core_utils);
     bool   readFreqs(double &avg_mhz, std::vector<double> &core_mhz);
     double readTemperature();
     double readIPC();
-    double readRAPL();          // returns watts, -1 if unavailable
-
-    bool openPerfCounters();
-    void closePerfCounters();
-    void initRAPL();
+    double readRAPL();
+    bool   openPerfCounters();
+    void   closePerfCounters();
+    void   initRAPL();
 
 public:
     MonitorManager();
     ~MonitorManager();
     void start();
     void stop();
+    void setPinnedMode(CpuMode m);
+    void setAuto();
 };

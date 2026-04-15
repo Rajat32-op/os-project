@@ -1,16 +1,19 @@
 import json
 import os
-import tkinter as tk
 import threading
 import queue
 import time
 from datetime import datetime
+import io
 
 import matplotlib
-matplotlib.use("TkAgg")
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
+
+from flask import Flask, render_template, request, jsonify, Response
+
+app = Flask(__name__)
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 MONITOR_PIPE = "config/monitor_pipe"
@@ -40,6 +43,14 @@ data_queue     = queue.Queue()
 is_monitoring  = False
 shutdown_event = threading.Event()
 
+current_status = {
+    "mode": "AUTO",
+    "state": "—",
+    "governor": "—",
+    "temp": -1.0,
+    "power": -1.0
+}
+
 # ── Matplotlib style ──────────────────────────────────────────────────────────
 plt.rcParams.update({
     "axes.facecolor":   "#f8fafc",
@@ -57,43 +68,7 @@ plt.rcParams.update({
     "lines.linewidth":  2.2,
 })
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Window
-# ─────────────────────────────────────────────────────────────────────────────
-root = tk.Tk()
-root.title("Adaptive CPU Persona Manager — Monitor")
-root.configure(bg="#eceff4")
-root.geometry("1300x800")
-root.minsize(900, 620)
-
-# ── Status bar ────────────────────────────────────────────────────────────────
-status_frame = tk.Frame(root, bg="#1e293b", pady=10)
-status_frame.pack(fill=tk.X, side=tk.TOP)
-
-tk.Label(status_frame, text="  🖥  Adaptive CPU Manager",
-         bg="#1e293b", fg="#e2e8f0",
-         font=("Helvetica", 13, "bold")).pack(side=tk.LEFT, padx=(14, 36))
-
-def _badge(parent, label, init, bg):
-    wrap = tk.Frame(parent, bg="#1e293b"); wrap.pack(side=tk.LEFT, padx=10)
-    tk.Label(wrap, text=label, bg="#1e293b", fg="#94a3b8",
-             font=("Helvetica", 8)).pack(side=tk.LEFT)
-    val = tk.Label(wrap, text=init, bg=bg, fg="white",
-                   font=("Helvetica", 9, "bold"),
-                   padx=10, pady=3, relief="flat")
-    val.pack(side=tk.LEFT, padx=(5, 0))
-    return val
-
-mode_badge  = _badge(status_frame, "Mode",     "AUTO", "#3b82f6")
-state_badge = _badge(status_frame, "State",    "—",    "#475569")
-gov_badge   = _badge(status_frame, "Governor", "—",    "#10b981")
-temp_badge  = _badge(status_frame, "Temp",     "—",    "#f59e0b")
-power_badge = _badge(status_frame, "Power",    "—",    "#6366f1")
-
-# ── 2×3 Graph grid ────────────────────────────────────────────────────────────
-graph_frame = tk.Frame(root, bg="#eceff4")
-graph_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(8, 0))
-
+# ── Setup Graph ────────────────────────────────────────────────────────────
 fig = plt.figure(figsize=(13, 6.2), facecolor="#eceff4")
 gs  = gridspec.GridSpec(2, 3, figure=fig, hspace=0.32, wspace=0.28)
 axes_map  = {}
@@ -114,24 +89,7 @@ for idx, (key, title, ylabel, colour, ylim) in enumerate(GRAPH_CFG):
     axes_map[key]  = ax
     lines_map[key] = ln
 
-canvas = FigureCanvasTkAgg(fig, master=graph_frame)
-canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
-
-# ── Button bar ────────────────────────────────────────────────────────────────
-btn_bar = tk.Frame(root, bg="#dde3ea", pady=10)
-btn_bar.pack(fill=tk.X, side=tk.BOTTOM)
-
-def _btn(parent, text, cmd, bg, fg="white", width=14):
-    b = tk.Button(parent, text=text, command=cmd, bg=bg, fg=fg,
-                  width=width, font=("Helvetica", 9, "bold"),
-                  relief="flat", bd=0, cursor="hand2",
-                  activebackground=bg, activeforeground=fg,
-                  padx=6, pady=6)
-    b.pack(side=tk.LEFT, padx=7)
-    return b
-
-tk.Label(btn_bar, text="  Controls:", bg="#dde3ea", fg="#475569",
-         font=("Helvetica", 9)).pack(side=tk.LEFT, padx=(12, 0))
+fig_lock = threading.Lock()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Report generation
@@ -158,7 +116,6 @@ def generate_report(records, session_dt, duration_s):
     num_cores = len(records[0].get("core_util", []))
 
     with open(fpath, "w") as f:
-        # ── Header ────────────────────────────────────────────────────────────
         f.write("=" * 68 + "\n")
         f.write("  ADAPTIVE CPU PERSONA MANAGER — SESSION REPORT\n")
         f.write("=" * 68 + "\n")
@@ -168,7 +125,6 @@ def generate_report(records, session_dt, duration_s):
         f.write(f"  CPU cores  : {num_cores}\n")
         f.write("=" * 68 + "\n\n")
 
-        # ── System-wide summary ───────────────────────────────────────────────
         f.write("SYSTEM-WIDE SUMMARY\n")
         f.write("-" * 68 + "\n")
         f.write(f"{'Metric':<22} {'Min':>10} {'Avg':>10} {'Max':>10}\n")
@@ -193,7 +149,6 @@ def generate_report(records, session_dt, duration_s):
                         f"{fmt.format(avg):>10} {fmt.format(hi):>10}\n")
         f.write("\n")
 
-        # ── Per-core summary ──────────────────────────────────────────────────
         if num_cores > 0:
             f.write("PER-CORE SUMMARY\n")
             f.write("-" * 68 + "\n")
@@ -210,7 +165,6 @@ def generate_report(records, session_dt, duration_s):
                 f.write(f"  CPU {core:<4d} {avg_u:>14.1f} {avg_m:>16.0f}\n")
             f.write("\n")
 
-       # ── Time-series CSV — saved as separate file ──────────────────────────────
     csv_fname = fname.replace(".txt", "_timeseries.csv")
     csv_fpath = os.path.join(RESULTS_DIR, csv_fname)
 
@@ -238,7 +192,6 @@ def generate_report(records, session_dt, duration_s):
                 row.append(f"{cm[c]:.0f}" if c < len(cm) else "0")
             cf.write(",".join(row) + "\n")
 
-    f.write(f"  Time-series : {csv_fname}\n")
     print(f"[report] Saved → {fpath}")
     print(f"[report] CSV   → {csv_fpath}")
 
@@ -255,15 +208,15 @@ def send_command(cmd_dict):
 
 def _reset_graphs():
     global start_time
-    timestamps.clear()
-    for v in data_series.values():
-        v.clear()
-    all_records.clear()
-    start_time = None
-    for key, ln in lines_map.items():
-        ln.set_data([], [])
-        axes_map[key].relim()
-    canvas.draw_idle()
+    with fig_lock:
+        timestamps.clear()
+        for v in data_series.values():
+            v.clear()
+        all_records.clear()
+        start_time = None
+        for key, ln in lines_map.items():
+            ln.set_data([], [])
+            axes_map[key].relim()
 
 def on_start():
     global is_monitoring, session_start_wall
@@ -279,7 +232,6 @@ def on_stop():
     global is_monitoring
     is_monitoring = False
     send_command({"cmd": "STOP"})
-    # Generate report in background so GUI stays responsive
     if all_records and session_start_wall:
         duration = timestamps[-1] if timestamps else 0.0
         recs     = list(all_records)
@@ -287,24 +239,6 @@ def on_stop():
         threading.Thread(
             target=generate_report, args=(recs, dt, duration), daemon=True
         ).start()
-
-def on_close():
-    global is_monitoring
-    is_monitoring = False
-    shutdown_event.set()
-    try: send_command({"cmd": "QUIT"})
-    except Exception: pass
-    root.destroy()
-
-root.protocol("WM_DELETE_WINDOW", on_close)
-
-# ── Buttons ───────────────────────────────────────────────────────────────────
-_btn(btn_bar, "▶  Start",        on_start,  "#22c55e")
-_btn(btn_bar, "■  Stop",         on_stop,   "#ef4444")
-_btn(btn_bar, "⟳  Auto Mode",    lambda: send_command({"cmd": "SET_MODE", "mode": "AUTO"}),       "#3b82f6")
-_btn(btn_bar, "📌  Manual",       lambda: send_command({"cmd": "SET_MODE", "mode": "MANUAL"}),     "#475569")
-_btn(btn_bar, "⚡  Performance",  lambda: send_command({"cmd": "SET_GOV",  "gov": "performance"}), "#f59e0b")
-_btn(btn_bar, "🌿  Powersave",    lambda: send_command({"cmd": "SET_GOV",  "gov": "powersave"}),   "#10b981")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # FIFO reader thread
@@ -324,84 +258,118 @@ def read_fifo():
                 except json.JSONDecodeError:
                     continue
         if not shutdown_event.is_set():
-            print("[fifo] C++ exited — closing GUI")
-            root.after(0, on_close)
+            print("[fifo] C++ exited")
     except Exception as e:
         if not shutdown_event.is_set():
             print(f"[fifo] Error: {e}")
-            root.after(0, on_close)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# GUI update loop
+# Data update loop
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _temp_color(t):
-    if t < 0:   return "#475569"
-    if t < 55:  return "#10b981"
-    if t < 75:  return "#f59e0b"
-    return              "#ef4444"
+def update_data():
+    global start_time, current_status
 
-def update_gui():
-    global start_time
+    while not shutdown_event.is_set():
+        if is_monitoring:
+            updated = False
+            while not data_queue.empty():
+                try:
+                    data = data_queue.get_nowait()
+                except queue.Empty:
+                    break
 
-    if is_monitoring:
-        updated = False
-        while not data_queue.empty():
-            try:
-                data = data_queue.get_nowait()
-            except queue.Empty:
-                break
+                if "util" not in data or "mhz" not in data:
+                    if "mode" in data: current_status["state"] = data["mode"]
+                    if "gov" in data: current_status["governor"] = data["gov"]
+                    if "auto" in data: current_status["mode"] = "AUTO" if data["auto"] else "PINNED"
+                    continue
 
-            if "util" not in data or "mhz" not in data:
-                continue
+                if start_time is None:
+                    start_time = time.time()
 
-            if start_time is None:
-                start_time = time.time()
+                t = time.time() - start_time
+                with fig_lock:
+                    timestamps.append(t)
+                    data["t"] = t
 
-            t = time.time() - start_time
-            timestamps.append(t)
-            data["t"] = t
+                    for key in SCALAR_KEYS:
+                        data_series[key].append(data.get(key, 0.0))
 
-            for key in SCALAR_KEYS:
-                data_series[key].append(data.get(key, 0.0))
+                    all_records.append(data)
 
-            all_records.append(data)
+                    if len(timestamps) > MAX_POINTS:
+                        timestamps.pop(0)
+                        all_records.pop(0)
+                        for v in data_series.values():
+                            if v: v.pop(0)
 
-            # Rolling window trim
-            if len(timestamps) > MAX_POINTS:
-                timestamps.pop(0)
-                all_records.pop(0)
-                for v in data_series.values():
-                    if v: v.pop(0)
+                temp  = data.get("temp",  -1.0)
+                power = data.get("power", -1.0)
+                current_status["temp"] = temp
+                current_status["power"] = power
+                if "mode" in data: current_status["state"] = data["mode"]
+                if "gov" in data: current_status["governor"] = data["gov"]
+                if "auto" in data: current_status["mode"] = "AUTO" if data["auto"] else "PINNED"
 
-            # Status badges
-            temp  = data.get("temp",  -1.0)
-            power = data.get("power", -1.0)
-            temp_badge.config(
-                text=f"{temp:.0f} °C" if temp >= 0 else "—",
-                bg=_temp_color(temp))
-            power_badge.config(
-                text=f"{power:.1f} W" if power >= 0 else "—")
+                updated = True
 
-            updated = True
-
-        if updated:
-            ts = timestamps
-            for key, ln in lines_map.items():
-                vals = data_series[key]
-                n    = min(len(ts), len(vals))
-                if n > 0:
-                    ln.set_data(ts[:n], vals[:n])
-                    axes_map[key].relim()
-                    axes_map[key].autoscale_view()
-            canvas.draw_idle()
-
-    root.after(100, update_gui)
+            if updated:
+                with fig_lock:
+                    ts = timestamps
+                    for key, ln in lines_map.items():
+                        vals = data_series[key]
+                        n    = min(len(ts), len(vals))
+                        if n > 0:
+                            ln.set_data(ts[:n], vals[:n])
+                            axes_map[key].relim()
+                            axes_map[key].autoscale_view()
+        time.sleep(0.1)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Launch
+# Flask endpoints
 # ─────────────────────────────────────────────────────────────────────────────
-print("[gui] Starting Adaptive CPU Manager …")
-threading.Thread(target=read_fifo, daemon=True).start()
-root.after(100, update_gui)
-root.mainloop()
+
+@app.route("/")
+def index():
+    return render_template("index.html")
+
+@app.route("/plot.png")
+def plot_png():
+    with fig_lock:
+        output = io.BytesIO()
+        fig.savefig(output, format='png', facecolor="#eceff4")
+        output.seek(0)
+        return Response(output.getvalue(), mimetype='image/png')
+
+@app.route("/status")
+def status():
+    return jsonify(current_status)
+
+@app.route("/cmd", methods=["POST"])
+def endpoint_cmd():
+    cmd = request.json.get("cmd")
+    if cmd == "START":
+        on_start()
+    elif cmd == "STOP":
+        on_stop()
+    elif cmd == "SET_MODE":
+        send_command({"cmd": "SET_MODE", "mode": request.json.get("mode")})
+    elif cmd == "SET_GOV":
+        send_command({"cmd": "SET_GOV", "gov": request.json.get("gov")})
+    elif cmd == "QUIT":
+        global is_monitoring
+        is_monitoring = False
+        shutdown_event.set()
+        send_command({"cmd": "QUIT"})
+        import sys
+        
+        # Flask doesn't gracefully shut down using sys.exit in a thread, but for this dev script it's ok.
+        sys.exit(0)
+    return jsonify({"status": "ok"})
+
+if __name__ == "__main__":
+    print("[gui] Starting Adaptive CPU Manager (Flask Web UI) …")
+    threading.Thread(target=read_fifo, daemon=True).start()
+    threading.Thread(target=update_data, daemon=True).start()
+    app.run(host="127.0.0.1", port=5000, debug=False)
