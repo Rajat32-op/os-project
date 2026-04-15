@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Adaptive CPU Persona Manager - Monitor</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: Helvetica, Arial, sans-serif;
+            background-color: #eceff4;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+        }
+
+        /* Status bar */
+        .status-bar {
+            background-color: #1e293b;
+            padding: 10px 0;
+            display: flex;
+            align-items: center;
+            color: #e2e8f0;
+        }
+
+        .status-title {
+            font-size: 13px;
+            font-weight: bold;
+            margin: 0 36px 0 14px;
+        }
+
+        .badge-wrap {
+            display: flex;
+            align-items: center;
+            margin: 0 10px;
+        }
+
+        .badge-label {
+            font-size: 12px;
+            color: #94a3b8;
+            margin-right: 5px;
+        }
+
+        .badge-value {
+            font-size: 13px;
+            font-weight: bold;
+            color: white;
+            padding: 4px 10px;
+        }
+
+        /* Graphs area */
+        .graph-container {
+            flex-grow: 1;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 10px;
+            overflow: hidden;
+            background-color: #eceff4;
+        }
+
+        .graph-container img {
+            max-width: 100%;
+            max-height: 100%;
+            object-fit: contain;
+        }
+
+        /* Button bar */
+        .button-bar {
+            background-color: #dde3ea;
+            padding: 10px 0;
+            display: flex;
+            align-items: center;
+        }
+
+        .button-bar-label {
+            font-size: 13px;
+            color: #475569;
+            margin: 0 12px;
+        }
+
+        .btn {
+            border: none;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: bold;
+            color: white;
+            padding: 8px 16px;
+            margin: 0 7px;
+            min-width: 130px;
+            display: inline-block;
+            text-align: center;
+        }
+
+        .btn:active {
+            opacity: 0.8;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="status-bar">
+        <div class="status-title">🖥 Adaptive CPU Manager</div>
+        
+        <div class="badge-wrap">
+            <div class="badge-label">Mode</div>
+            <div class="badge-value" id="badge-mode" style="background-color: #3b82f6;">AUTO</div>
+        </div>
+        
+        <div class="badge-wrap">
+            <div class="badge-label">State</div>
+            <div class="badge-value" id="badge-state" style="background-color: #475569;">&mdash;</div>
+        </div>
+        
+        <div class="badge-wrap">
+            <div class="badge-label">Governor</div>
+            <div class="badge-value" id="badge-gov" style="background-color: #10b981;">&mdash;</div>
+        </div>
+        
+        <div class="badge-wrap">
+            <div class="badge-label">Temp</div>
+            <div class="badge-value" id="badge-temp" style="background-color: #f59e0b;">&mdash;</div>
+        </div>
+        
+        <div class="badge-wrap">
+            <div class="badge-label">Power</div>
+            <div class="badge-value" id="badge-power" style="background-color: #6366f1;">&mdash;</div>
+        </div>
+    </div>
+
+    <div class="graph-container">
+        <img id="plot-img" src="/plot.png" alt="Graph Plot" />
+    </div>
+
+    <div class="button-bar">
+        <div class="button-bar-label">Controls:</div>
+        
+        <button class="btn" style="background-color: #22c55e;" onclick="sendCommand('START')">▶ Start</button>
+        <button class="btn" style="background-color: #ef4444;" onclick="sendCommand('STOP')">■ Stop</button>
+        <button class="btn" style="background-color: #3b82f6;" onclick="sendCommand('SET_MODE', {mode: 'AUTO'})">⟳ Auto Mode</button>
+        <button class="btn" style="background-color: #475569;" onclick="sendCommand('SET_MODE', {mode: 'MANUAL'})">📌 Manual</button>
+        <button class="btn" style="background-color: #f59e0b;" onclick="sendCommand('SET_GOV', {gov: 'performance'})">⚡ Performance</button>
+        <button class="btn" style="background-color: #10b981;" onclick="sendCommand('SET_GOV', {gov: 'powersave'})">🌿 Powersave</button>
+    </div>
+
+    <script>
+        // Send commands
+        function sendCommand(cmd, extraArgs = {}) {
+            const payload = { cmd: cmd, ...extraArgs };
+            fetch('/cmd', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            }).catch(err => console.error("Error sending command:", err));
+        }
+
+        // Colors logic from Python
+        function tempColor(t) {
+            if (t < 0) return "#475569";
+            if (t < 55) return "#10b981";
+            if (t < 75) return "#f59e0b";
+            return "#ef4444";
+        }
+
+        // Refresh plot map
+        setInterval(() => {
+            const img = document.getElementById('plot-img');
+            img.src = '/plot.png?t=' + Date.now();
+        }, 500);
+
+        // Fetch status periodically
+        setInterval(async () => {
+            try {
+                const response = await fetch('/status');
+                const data = await response.json();
+                
+                document.getElementById('badge-mode').innerText = data.mode || "AUTO";
+                document.getElementById('badge-state').innerText = data.state || "—";
+                document.getElementById('badge-gov').innerText = data.governor || "—";
+                
+                if (data.temp >= 0) {
+                    const tempBg = tempColor(data.temp);
+                    document.getElementById('badge-temp').innerText = Math.round(data.temp) + " °C";
+                    document.getElementById('badge-temp').style.backgroundColor = tempBg;
+                } else {
+                    document.getElementById('badge-temp').innerText = "—";
+                    document.getElementById('badge-temp').style.backgroundColor = "#f59e0b";
+                }
+
+                if (data.power >= 0) {
+                    document.getElementById('badge-power').innerText = data.power.toFixed(1) + " W";
+                } else {
+                    document.getElementById('badge-power').innerText = "—";
+                }
+
+            } catch(e) {
+                console.error("Error fetching status:", e);
+            }
+        }, 500);
+    </script>
+</body>
+</html>
