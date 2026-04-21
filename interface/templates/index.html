@@ -119,11 +119,6 @@
         </div>
         
         <div class="badge-wrap">
-            <div class="badge-label">Temp</div>
-            <div class="badge-value" id="badge-temp" style="background-color: #f59e0b;">&mdash;</div>
-        </div>
-        
-        <div class="badge-wrap">
             <div class="badge-label">Power</div>
             <div class="badge-value" id="badge-power" style="background-color: #6366f1;">&mdash;</div>
         </div>
@@ -138,10 +133,10 @@
         
         <button class="btn" style="background-color: #22c55e;" onclick="sendCommand('START')">▶ Start</button>
         <button class="btn" style="background-color: #ef4444;" onclick="sendCommand('STOP')">■ Stop</button>
-        <button class="btn" style="background-color: #3b82f6;" onclick="sendCommand('SET_MODE', {mode: 'AUTO'})">⟳ Auto Mode</button>
+        <!-- <button class="btn" style="background-color: #3b82f6;" onclick="sendCommand('SET_MODE', {mode: 'AUTO'})">⟳ Auto Mode</button>
         <button class="btn" style="background-color: #475569;" onclick="sendCommand('SET_MODE', {mode: 'MANUAL'})">📌 Manual</button>
         <button class="btn" style="background-color: #f59e0b;" onclick="sendCommand('SET_GOV', {gov: 'performance'})">⚡ Performance</button>
-        <button class="btn" style="background-color: #10b981;" onclick="sendCommand('SET_GOV', {gov: 'powersave'})">🌿 Powersave</button>
+        <button class="btn" style="background-color: #10b981;" onclick="sendCommand('SET_GOV', {gov: 'powersave'})">🌿 Powersave</button> -->
     </div>
 
     <script>
@@ -153,14 +148,6 @@
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
             }).catch(err => console.error("Error sending command:", err));
-        }
-
-        // Colors logic from Python
-        function tempColor(t) {
-            if (t < 0) return "#475569";
-            if (t < 55) return "#10b981";
-            if (t < 75) return "#f59e0b";
-            return "#ef4444";
         }
 
         // Refresh plot map
@@ -178,15 +165,6 @@
                 document.getElementById('badge-mode').innerText = data.mode || "AUTO";
                 document.getElementById('badge-state').innerText = data.state || "—";
                 document.getElementById('badge-gov').innerText = data.governor || "—";
-                
-                if (data.temp >= 0) {
-                    const tempBg = tempColor(data.temp);
-                    document.getElementById('badge-temp').innerText = Math.round(data.temp) + " °C";
-                    document.getElementById('badge-temp').style.backgroundColor = tempBg;
-                } else {
-                    document.getElementById('badge-temp').innerText = "—";
-                    document.getElementById('badge-temp').style.backgroundColor = "#f59e0b";
-                }
 
                 if (data.power >= 0) {
                     document.getElementById('badge-power').innerText = data.power.toFixed(1) + " W";

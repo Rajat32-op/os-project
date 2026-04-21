@@ -24,10 +24,8 @@ RESULTS_DIR  = "results"
 GRAPH_CFG = [
     ("util",   "CPU Utilization",   "Util (%)",          "#4361ee", (0, 105)),
     ("ipc",    "IPC",               "Instructions/Cycle","#2ec4b6", None),
-    ("mhz",    "Avg Frequency",     "MHz",               "#ff9f1c", None),
     ("iowait", "I/O Wait",          "Wait (%)",          "#e63946", (0, 105)),
     ("ctxsw",  "Context Switches",  "Switches / s",      "#9b5de5", None),
-    ("temp",   "Temperature",       "°C",                "#f4a261", None),
 ]
 SCALAR_KEYS = [g[0] for g in GRAPH_CFG]
 MAX_POINTS  = 120
@@ -47,7 +45,6 @@ current_status = {
     "mode": "AUTO",
     "state": "—",
     "governor": "—",
-    "temp": -1.0,
     "power": -1.0
 }
 
@@ -132,11 +129,9 @@ def generate_report(records, session_dt, duration_s):
 
         metrics = [
             ("CPU Util (%)",      "util",    "{:.1f}"),
-            ("Avg Freq (MHz)",    "mhz",     "{:.0f}"),
             ("IPC",               "ipc",     "{:.3f}"),
             ("I/O Wait (%)",      "iowait",  "{:.2f}"),
             ("Ctx Switches /s",   "ctxsw",   "{:.0f}"),
-            ("Temperature (°C)",  "temp",    "{:.1f}"),
             ("Package Power (W)", "power",   "{:.2f}"),
         ]
         for label, key, fmt in metrics:
@@ -152,25 +147,22 @@ def generate_report(records, session_dt, duration_s):
         if num_cores > 0:
             f.write("PER-CORE SUMMARY\n")
             f.write("-" * 68 + "\n")
-            f.write(f"  {'Core':<8} {'Avg Util (%)':>14} {'Avg Freq (MHz)':>16}\n")
+            f.write(f"  {'Core':<8} {'Avg Util (%)':>14}\n")
             f.write("-" * 68 + "\n")
 
             for core in range(num_cores):
                 u_vals = [r["core_util"][core] for r in records
                           if "core_util" in r and core < len(r["core_util"])]
-                m_vals = [r["core_mhz"][core]  for r in records
-                          if "core_mhz"  in r and core < len(r["core_mhz"])]
                 avg_u = sum(u_vals) / len(u_vals) if u_vals else 0.0
-                avg_m = sum(m_vals) / len(m_vals) if m_vals else 0.0
-                f.write(f"  CPU {core:<4d} {avg_u:>14.1f} {avg_m:>16.0f}\n")
+                f.write(f"  CPU {core:<4d} {avg_u:>14.1f}\n")
             f.write("\n")
 
     csv_fname = fname.replace(".txt", "_timeseries.csv")
     csv_fpath = os.path.join(RESULTS_DIR, csv_fname)
 
-    csv_cols = ["t_s", "util", "mhz", "ipc", "iowait", "ctxsw", "temp", "power"]
+    csv_cols = ["t_s", "util", "ipc", "iowait", "ctxsw", "power"]
     for c in range(num_cores):
-        csv_cols += [f"core{c}_util", f"core{c}_mhz"]
+        csv_cols += [f"core{c}_util"]
 
     with open(csv_fpath, "w") as cf:
         cf.write(",".join(csv_cols) + "\n")
@@ -178,18 +170,14 @@ def generate_report(records, session_dt, duration_s):
             row = [
                 f"{r.get('t', 0):.1f}",
                 f"{r.get('util',   0):.2f}",
-                f"{r.get('mhz',    0):.1f}",
                 f"{r.get('ipc',    0):.3f}",
                 f"{r.get('iowait', 0):.2f}",
                 f"{r.get('ctxsw',  0):.0f}",
-                f"{r.get('temp',  -1):.1f}",
                 f"{r.get('power', -1):.2f}",
             ]
             cu = r.get("core_util", [])
-            cm = r.get("core_mhz",  [])
             for c in range(num_cores):
                 row.append(f"{cu[c]:.1f}" if c < len(cu) else "0")
-                row.append(f"{cm[c]:.0f}" if c < len(cm) else "0")
             cf.write(",".join(row) + "\n")
 
     print(f"[report] Saved → {fpath}")
@@ -279,7 +267,7 @@ def update_data():
                 except queue.Empty:
                     break
 
-                if "util" not in data or "mhz" not in data:
+                if "util" not in data:
                     if "mode" in data: current_status["state"] = data["mode"]
                     if "gov" in data: current_status["governor"] = data["gov"]
                     if "auto" in data: current_status["mode"] = "AUTO" if data["auto"] else "PINNED"
@@ -304,9 +292,7 @@ def update_data():
                         for v in data_series.values():
                             if v: v.pop(0)
 
-                temp  = data.get("temp",  -1.0)
                 power = data.get("power", -1.0)
-                current_status["temp"] = temp
                 current_status["power"] = power
                 if "mode" in data: current_status["state"] = data["mode"]
                 if "gov" in data: current_status["governor"] = data["gov"]

@@ -46,8 +46,6 @@ private:
     void   readerLoop();
     bool   readProcStat(double &util, double &iowait, double &ctxsw,
                         std::vector<double> &core_utils);
-    bool   readFreqs(double &avg_mhz, std::vector<double> &core_mhz);
-    double readTemperature();
     double readIPC();
     double readRAPL();
     bool   openPerfCounters();
