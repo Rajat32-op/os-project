@@ -202,60 +202,6 @@ bool MonitorManager::readProcStat(double &util_pct, double &iowait_pct,
     return true;
 }
 
-// ── readFreqs ─────────────────────────────────────────────────────────────
-bool MonitorManager::readFreqs(double &avg_mhz, std::vector<double> &core_mhz) {
-    core_mhz.resize(num_cpus, 0.0);
-    double sum = 0.0; int count = 0;
-    for (int cpu = 0; cpu < num_cpus; ++cpu) {
-        char path[128];
-        snprintf(path, sizeof(path),
-                 "/sys/devices/system/cpu/cpu%d/cpufreq/scaling_cur_freq", cpu);
-        FILE *f = fopen(path, "r");
-        if (!f) continue;
-        long khz = 0;
-        if (fscanf(f, "%ld", &khz) == 1) {
-            double mhz = khz / 1000.0;
-            core_mhz[cpu] = mhz; sum += mhz; ++count;
-        }
-        fclose(f);
-    }
-    avg_mhz = (count > 0) ? sum/count : 0.0;
-    return count > 0;
-}
-
-// ── readTemperature ───────────────────────────────────────────────────────
-double MonitorManager::readTemperature() {
-    double best = -1.0; bool has_pkg = false;
-    DIR *dir = opendir("/sys/class/thermal");
-    if (!dir) return -1.0;
-    struct dirent *ent;
-    while ((ent = readdir(dir)) != nullptr) {
-        if (strncmp(ent->d_name, "thermal_zone", 12) != 0) continue;
-        char type_path[320], temp_path[320];
-        snprintf(type_path, sizeof(type_path),
-                 "/sys/class/thermal/%s/type", ent->d_name);
-        snprintf(temp_path, sizeof(temp_path),
-                 "/sys/class/thermal/%s/temp", ent->d_name);
-        char type_buf[64] = {};
-        FILE *tf = fopen(type_path, "r");
-        if (tf) { (void)fscanf(tf, "%63s", type_buf); fclose(tf); }
-        FILE *f = fopen(temp_path, "r");
-        if (!f) continue;
-        long milli_c = 0;
-        if (fscanf(f, "%ld", &milli_c) == 1) {
-            double deg = milli_c / 1000.0;
-            if (strstr(type_buf, "pkg") || strstr(type_buf, "x86")) {
-                if (!has_pkg || deg > best) { best = deg; has_pkg = true; }
-            } else if (!has_pkg && (best < 0 || deg > best)) {
-                best = deg;
-            }
-        }
-        fclose(f);
-    }
-    closedir(dir);
-    return best;
-}
-
 // ── readIPC ───────────────────────────────────────────────────────────────
 double MonitorManager::readIPC() {
     long long tc = 0, ti = 0;
@@ -274,14 +220,10 @@ double MonitorManager::readIPC() {
 void MonitorManager::readerLoop() {
     while (running) {
         double util = 0, iowait = 0, ctxsw = 0;
-        std::vector<double> core_utils, core_mhz;
+        std::vector<double> core_utils;
 
         readProcStat(util, iowait, ctxsw, core_utils);
 
-        double avg_mhz = 0;
-        readFreqs(avg_mhz, core_mhz);
-
-        double temp  = readTemperature();
         double ipc   = readIPC();
         double power = readRAPL();
 
@@ -314,11 +256,11 @@ void MonitorManager::readerLoop() {
         int confidence = classifier.CONFIDENCE_N;
         std::string gov = governor.current();
 
-        printf("[%s%s] Util:%.1f%% MHz:%.0f IPC:%.3f "
-               "IOWait:%.1f%% CtxSw:%.0f/s Temp:%.1f°C Power:%.1fW"
+        printf("[%s%s] Util:%.1f%% IPC:%.3f "
+               "IOWait:%.1f%% CtxSw:%.0f/s Power:%.1fW"
                " Gov:%s | candidate:%s streak:%d/%d\n",
                mode_str.c_str(), is_auto ? "" : "(PINNED)",
-               util, avg_mhz, ipc, iowait, ctxsw, temp, power,
+               util, ipc, iowait, ctxsw, power,
                gov.c_str(),
                modeToString(classifier.getCandidate()).c_str(),
                streak, confidence);
@@ -326,11 +268,9 @@ void MonitorManager::readerLoop() {
         // ── Build JSON ────────────────────────────────────────────────────
         std::string json = "{";
         json += "\"util\":"   + dtos(util,    2) + ",";
-        json += "\"mhz\":"    + dtos(avg_mhz, 1) + ",";
         json += "\"ipc\":"    + dtos(ipc,     3) + ",";
         json += "\"iowait\":" + dtos(iowait,  2) + ",";
         json += "\"ctxsw\":"  + dtos(ctxsw,   0) + ",";
-        json += "\"temp\":"   + dtos(temp,     1) + ",";
         json += "\"power\":"  + dtos(power,    2) + ",";
         json += "\"mode\":\""  + mode_str + "\",";
         json += "\"auto\":"    + std::string(is_auto ? "true" : "false") + ",";
@@ -341,13 +281,6 @@ void MonitorManager::readerLoop() {
         for (int i = 0; i < (int)core_utils.size(); ++i) {
             if (i) json += ",";
             json += dtos(core_utils[i], 1);
-        }
-        json += "],";
-
-        json += "\"core_mhz\":[";
-        for (int i = 0; i < (int)core_mhz.size(); ++i) {
-            if (i) json += ",";
-            json += dtos(core_mhz[i], 0);
         }
         json += "]}\n";
 
