@@ -24,8 +24,10 @@ RESULTS_DIR  = "results"
 GRAPH_CFG = [
     ("util",   "CPU Utilization",   "Util (%)",          "#4361ee", (0, 105)),
     ("ipc",    "IPC",               "Instructions/Cycle","#2ec4b6", None),
+    ("mhz",    "Avg Frequency",     "MHz",               "#ff9f1c", None),
     ("iowait", "I/O Wait",          "Wait (%)",          "#e63946", (0, 105)),
     ("ctxsw",  "Context Switches",  "Switches / s",      "#9b5de5", None),
+    ("temp",   "Temperature",       "°C",                "#f4a261", None),
 ]
 SCALAR_KEYS = [g[0] for g in GRAPH_CFG]
 MAX_POINTS  = 120
@@ -44,7 +46,9 @@ shutdown_event = threading.Event()
 current_status = {
     "mode": "AUTO",
     "state": "—",
+    "workload": "—",
     "governor": "—",
+    "temp": -1.0,
     "power": -1.0
 }
 
@@ -267,7 +271,7 @@ def update_data():
                 except queue.Empty:
                     break
 
-                if "util" not in data:
+                if "util" not in data or "mhz" not in data:
                     if "mode" in data: current_status["state"] = data["mode"]
                     if "gov" in data: current_status["governor"] = data["gov"]
                     if "auto" in data: current_status["mode"] = "AUTO" if data["auto"] else "PINNED"
@@ -292,9 +296,12 @@ def update_data():
                         for v in data_series.values():
                             if v: v.pop(0)
 
+                temp  = data.get("temp",  -1.0)
                 power = data.get("power", -1.0)
+                current_status["temp"] = temp
                 current_status["power"] = power
                 if "mode" in data: current_status["state"] = data["mode"]
+                if "workload" in data: current_status["workload"] = data["workload"]
                 if "gov" in data: current_status["governor"] = data["gov"]
                 if "auto" in data: current_status["mode"] = "AUTO" if data["auto"] else "PINNED"
 
