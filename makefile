@@ -7,7 +7,8 @@ SRC = main.cpp \
       core/controllers/event_controller.cpp \
       core/classifier/classifier.cpp \
       core/calibrator/calibrator.cpp \
-      core/policy/governor.cpp
+      core/policy/governor.cpp \
+      core/policy/adaptive_policy_engine.cpp
 
 OBJ = $(SRC:.cpp=.o)
 
@@ -19,7 +20,8 @@ HEADERS = core/monitor/monitor_manager.h \
           core/controllers/event_controller.h \
           core/classifier/classifier.h \
           core/calibrator/calibrator.h \
-          core/policy/governor.h
+          core/policy/governor.h \
+          core/policy/adaptive_policy_engine.h
 
 .PHONY: all clean run setup install
 

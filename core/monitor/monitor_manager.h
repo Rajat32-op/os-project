@@ -7,10 +7,12 @@
 #include <iostream>
 #include "../classifier/classifier.h"
 #include "../policy/governor.h"
+#include "../policy/adaptive_policy_engine.h"
 
 struct PerfCounters {
     int fd_cycles;
     int fd_instrs;
+    int fd_cache_misses;
 };
 
 class MonitorManager {
@@ -38,6 +40,7 @@ private:
     // Classifier + pin state
     Classifier  classifier;
     Governor    governor;
+    AdaptivePolicyEngine adaptive_policy;
     CpuMode     last_committed;    // track changes to avoid redundant apply()
     std::mutex  mode_mutex;
     bool        is_pinned;
@@ -46,7 +49,9 @@ private:
     void   readerLoop();
     bool   readProcStat(double &util, double &iowait, double &ctxsw,
                         std::vector<double> &core_utils);
-    double readIPC();
+    bool   readFreqs(double &avg_mhz, std::vector<double> &core_mhz);
+    double readTemperature();
+    double readIPC(double &cache_misses);
     double readRAPL();
     bool   openPerfCounters();
     void   closePerfCounters();

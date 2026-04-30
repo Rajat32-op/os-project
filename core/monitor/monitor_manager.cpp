@@ -71,7 +71,7 @@ void MonitorManager::setAuto() {
 // ── perf counters ─────────────────────────────────────────────────────────
 bool MonitorManager::openPerfCounters() {
     perf_fds.clear();
-    perf_fds.resize(num_cpus, {-1, -1});
+    perf_fds.resize(num_cpus, {-1, -1, -1});
     for (int cpu = 0; cpu < num_cpus; ++cpu) {
         struct perf_event_attr pe{};
         pe.size = sizeof(pe); pe.type = PERF_TYPE_HARDWARE;
@@ -82,7 +82,9 @@ bool MonitorManager::openPerfCounters() {
         pe.config = PERF_COUNT_HW_INSTRUCTIONS;
         int fd_i = perf_event_open(&pe, -1, cpu, -1, 0);
         if (fd_i < 0) { close(fd_c); printf("[perf] instrs failed cpu%d\n", cpu); return false; }
-        perf_fds[cpu] = {fd_c, fd_i};
+        pe.config = PERF_COUNT_HW_CACHE_MISSES;
+        int fd_miss = perf_event_open(&pe, -1, cpu, -1, 0); // Ignore error as cache misses may not be available on all arch
+        perf_fds[cpu] = {fd_c, fd_i, fd_miss};
     }
     printf("[perf] Opened counters for %d CPUs\n", num_cpus);
     return true;
@@ -92,6 +94,7 @@ void MonitorManager::closePerfCounters() {
     for (auto &pf : perf_fds) {
         if (pf.fd_cycles >= 0) { close(pf.fd_cycles); pf.fd_cycles = -1; }
         if (pf.fd_instrs >= 0) { close(pf.fd_instrs); pf.fd_instrs = -1; }
+        if (pf.fd_cache_misses >= 0) { close(pf.fd_cache_misses); pf.fd_cache_misses = -1; }
     }
     perf_fds.clear();
 }
@@ -202,17 +205,76 @@ bool MonitorManager::readProcStat(double &util_pct, double &iowait_pct,
     return true;
 }
 
+// ── readFreqs ─────────────────────────────────────────────────────────────
+bool MonitorManager::readFreqs(double &avg_mhz, std::vector<double> &core_mhz) {
+    core_mhz.resize(num_cpus, 0.0);
+    double sum = 0.0; int count = 0;
+    for (int cpu = 0; cpu < num_cpus; ++cpu) {
+        char path[128];
+        snprintf(path, sizeof(path),
+                 "/sys/devices/system/cpu/cpu%d/cpufreq/scaling_cur_freq", cpu);
+        FILE *f = fopen(path, "r");
+        if (!f) continue;
+        long khz = 0;
+        if (fscanf(f, "%ld", &khz) == 1) {
+            double mhz = khz / 1000.0;
+            core_mhz[cpu] = mhz; sum += mhz; ++count;
+        }
+        fclose(f);
+    }
+    avg_mhz = (count > 0) ? sum/count : 0.0;
+    return count > 0;
+}
+
+// ── readTemperature ───────────────────────────────────────────────────────
+double MonitorManager::readTemperature() {
+    double best = -1.0; bool has_pkg = false;
+    DIR *dir = opendir("/sys/class/thermal");
+    if (!dir) return -1.0;
+    struct dirent *ent;
+    while ((ent = readdir(dir)) != nullptr) {
+        if (strncmp(ent->d_name, "thermal_zone", 12) != 0) continue;
+        char type_path[320], temp_path[320];
+        snprintf(type_path, sizeof(type_path),
+                 "/sys/class/thermal/%s/type", ent->d_name);
+        snprintf(temp_path, sizeof(temp_path),
+                 "/sys/class/thermal/%s/temp", ent->d_name);
+        char type_buf[64] = {};
+        FILE *tf = fopen(type_path, "r");
+        if (tf) { (void)fscanf(tf, "%63s", type_buf); fclose(tf); }
+        FILE *f = fopen(temp_path, "r");
+        if (!f) continue;
+        long milli_c = 0;
+        if (fscanf(f, "%ld", &milli_c) == 1) {
+            double deg = milli_c / 1000.0;
+            if (strstr(type_buf, "pkg") || strstr(type_buf, "x86")) {
+                if (!has_pkg || deg > best) { best = deg; has_pkg = true; }
+            } else if (!has_pkg && (best < 0 || deg > best)) {
+                best = deg;
+            }
+        }
+        fclose(f);
+    }
+    closedir(dir);
+    return best;
+}
+
 // ── readIPC ───────────────────────────────────────────────────────────────
-double MonitorManager::readIPC() {
-    long long tc = 0, ti = 0;
+double MonitorManager::readIPC(double &cache_misses) {
+    long long tc = 0, ti = 0, tm = 0;
     for (auto &pf : perf_fds) {
         if (pf.fd_cycles < 0 || pf.fd_instrs < 0) continue;
-        long long c = 0, i = 0;
+        long long c = 0, i = 0, m = 0;
         if (read(pf.fd_cycles, &c, sizeof(c)) == sizeof(c)) tc += c;
         if (read(pf.fd_instrs, &i, sizeof(i)) == sizeof(i)) ti += i;
+        if (pf.fd_cache_misses >= 0 && read(pf.fd_cache_misses, &m, sizeof(m)) == sizeof(m)) tm += m;
+        
         ioctl(pf.fd_cycles, PERF_EVENT_IOC_RESET, 0);
         ioctl(pf.fd_instrs, PERF_EVENT_IOC_RESET, 0);
+        if (pf.fd_cache_misses >= 0) ioctl(pf.fd_cache_misses, PERF_EVENT_IOC_RESET, 0);
     }
+    // simple metric for memory proxy, scaled arbitrarily
+    cache_misses = (double)tm / 1000.0;
     return (tc > 0) ? (double)ti/tc : 0.0;
 }
 
@@ -220,20 +282,32 @@ double MonitorManager::readIPC() {
 void MonitorManager::readerLoop() {
     while (running) {
         double util = 0, iowait = 0, ctxsw = 0;
-        std::vector<double> core_utils;
+        std::vector<double> core_utils, core_mhz;
 
         readProcStat(util, iowait, ctxsw, core_utils);
 
-        double ipc   = readIPC();
+        double avg_mhz = 0;
+        readFreqs(avg_mhz, core_mhz);
+
+        double temp = readTemperature();
+
+        double cache_misses = 0;
+        double ipc   = readIPC(cache_misses);
         double power = readRAPL();
 
         if (util < 0)   util   = 0;
         if (util > 100) util   = 100;
         if (iowait < 0) iowait = 0;
 
-        // ── Mode decision ─────────────────────────────────────────────────
+        // ── Mode decision and Policy mapping ──────────────────────────────
         CpuMode mode;
         bool    is_auto;
+        
+        // 1. Classify workload through new controller
+        WorkloadDict wl = adaptive_policy.classifyWorkload(util, iowait, cache_misses);
+        // Estimate dummy freq for now (pass true avg freq)
+        SysAction action = adaptive_policy.decidePolicy(wl, avg_mhz);
+        
         {
             std::lock_guard<std::mutex> lk(mode_mutex);
             if (is_pinned) {
@@ -244,9 +318,11 @@ void MonitorManager::readerLoop() {
                 is_auto = true;
             }
 
-            // Apply governor only when committed mode actually changes
-            if (mode != last_committed) {
-                governor.apply(mode);
+            // Optional: apply baseline controller governor vs rule-based governor
+            // We use standard governor class but log the closed loop engine decision
+            if (mode != last_committed || action.governor != governor.current()) {
+                governor.apply(mode); // baseline
+                adaptive_policy.applyAction(action);
                 last_committed = mode;
             }
         }
@@ -256,11 +332,11 @@ void MonitorManager::readerLoop() {
         int confidence = classifier.CONFIDENCE_N;
         std::string gov = governor.current();
 
-        printf("[%s%s] Util:%.1f%% IPC:%.3f "
-               "IOWait:%.1f%% CtxSw:%.0f/s Power:%.1fW"
+        printf("[%s%s] Util:%.1f%% MHz:%.0f IPC:%.3f "
+               "IOWait:%.1f%% CtxSw:%.0f/s Temp:%.1f°C Power:%.1fW Miss:%.1fk"
                " Gov:%s | candidate:%s streak:%d/%d\n",
                mode_str.c_str(), is_auto ? "" : "(PINNED)",
-               util, ipc, iowait, ctxsw, power,
+               util, avg_mhz, ipc, iowait, ctxsw, temp, power, cache_misses,
                gov.c_str(),
                modeToString(classifier.getCandidate()).c_str(),
                streak, confidence);
@@ -268,11 +344,14 @@ void MonitorManager::readerLoop() {
         // ── Build JSON ────────────────────────────────────────────────────
         std::string json = "{";
         json += "\"util\":"   + dtos(util,    2) + ",";
+        json += "\"mhz\":"    + dtos(avg_mhz, 1) + ",";
         json += "\"ipc\":"    + dtos(ipc,     3) + ",";
         json += "\"iowait\":" + dtos(iowait,  2) + ",";
         json += "\"ctxsw\":"  + dtos(ctxsw,   0) + ",";
+        json += "\"temp\":"   + dtos(temp,     1) + ",";
         json += "\"power\":"  + dtos(power,    2) + ",";
         json += "\"mode\":\""  + mode_str + "\",";
+        json += "\"workload\":\"Idl:" + dtos(wl.idle*100, 0) + "% C:" + dtos(wl.compute*100, 0) + "% I:" + dtos(wl.io*100, 0) + "% M:" + dtos(wl.memory*100, 0) + "%\",";
         json += "\"auto\":"    + std::string(is_auto ? "true" : "false") + ",";
         json += "\"streak\":"  + std::to_string(streak) + ",";
         json += "\"gov\":\""   + gov + "\",";
@@ -281,6 +360,11 @@ void MonitorManager::readerLoop() {
         for (int i = 0; i < (int)core_utils.size(); ++i) {
             if (i) json += ",";
             json += dtos(core_utils[i], 1);
+        }
+        json += "],\"core_mhz\":[";
+        for (int i = 0; i < (int)core_mhz.size(); ++i) {
+            if (i) json += ",";
+            json += dtos(core_mhz[i], 1);
         }
         json += "]}\n";
 
@@ -293,7 +377,8 @@ void MonitorManager::readerLoop() {
             }
         }
 
-        sleep(1);
+        // Run cycle at 500ms
+        usleep(500000);
     }
 }
 

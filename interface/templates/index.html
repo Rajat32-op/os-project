@@ -114,8 +114,18 @@
         </div>
         
         <div class="badge-wrap">
+            <div class="badge-label">Workload Mix</div>
+            <div class="badge-value" id="badge-workload" style="background-color: #8b5cf6;">&mdash;</div>
+        </div>
+        
+        <div class="badge-wrap">
             <div class="badge-label">Governor</div>
             <div class="badge-value" id="badge-gov" style="background-color: #10b981;">&mdash;</div>
+        </div>
+        
+        <div class="badge-wrap">
+            <div class="badge-label">Temp</div>
+            <div class="badge-value" id="badge-temp" style="background-color: #f4a261;">&mdash;</div>
         </div>
         
         <div class="badge-wrap">
@@ -164,7 +174,14 @@
                 
                 document.getElementById('badge-mode').innerText = data.mode || "AUTO";
                 document.getElementById('badge-state').innerText = data.state || "—";
+                document.getElementById('badge-workload').innerText = data.workload || "—";
                 document.getElementById('badge-gov').innerText = data.governor || "—";
+
+                if (data.temp >= 0) {
+                    document.getElementById('badge-temp').innerText = data.temp.toFixed(1) + " °C";
+                } else {
+                    document.getElementById('badge-temp').innerText = "—";
+                }
 
                 if (data.power >= 0) {
                     document.getElementById('badge-power').innerText = data.power.toFixed(1) + " W";
