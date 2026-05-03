@@ -379,7 +379,7 @@ void MonitorManager::readerLoop() {
 
         // Base performance vs power
 
-        double score = (4.5*ipc_n * util_n) - 0.02 * power_n-3.0*mem_n-2.5*io_n;
+        double score = (12.0*ipc_n * util_n) - 0.01 * power_n-4.0*mem_n-3.5*io_n;
         double reward = 2*(score - last_score)+score;
         last_score = score;
 
