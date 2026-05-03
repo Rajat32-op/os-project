@@ -48,6 +48,19 @@ private:
     std::mutex  mode_mutex;
     bool        is_pinned;
     CpuMode     pinned_mode;
+    bool        rl_enabled;
+    double      sum_power;
+    double      sum_ipc;
+    double      sum_util;
+    double      sum_freq;
+    int         sample_count;
+    int         action_changes;
+    double      run_start_time;
+    double      run_end_time;
+    std::string summary_path;
+    std::string csv_path;
+    FILE       *csv_fp;
+    bool        csv_header_written;
     std::string last_action;
     double last_score;
 
@@ -70,4 +83,6 @@ public:
     void stop();
     void setPinnedMode(CpuMode m);
     void setAuto();
+    void setRLEnabled(bool enabled);
+    bool isRLEnabled() const;
 };

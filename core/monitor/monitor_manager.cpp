@@ -38,13 +38,29 @@ MonitorManager::MonitorManager()
     : running(false), fifo_fd(-1), first_sample(true),
       prev_energy_uj(-1), rapl_available(false),
       last_committed(CpuMode::IDLE), prev_pg_io(0),
-      is_pinned(false), pinned_mode(CpuMode::IDLE),prev_time(-1.0),last_action("DO_NOTHING"),last_score(0.0) {
+      is_pinned(false), pinned_mode(CpuMode::IDLE), rl_enabled(false), sum_power(0.0), sum_ipc(0.0), sum_util(0.0), sum_freq(0.0), sample_count(0), action_changes(0), run_start_time(0.0), run_end_time(0.0), summary_path(""), csv_path(""), csv_fp(nullptr), csv_header_written(false), prev_time(-1.0), last_action("DO_NOTHING"), last_score(0.0) {
     num_cpus = (int)sysconf(_SC_NPROCESSORS_ONLN);
     if (num_cpus < 1) num_cpus = 1;
     memset(&prev_total, 0, sizeof(prev_total));
     prev_ctxt = 0;
     prev_core.resize(num_cpus);
     for (auto &c : prev_core) memset(&c, 0, sizeof(c));
+
+    // Read runtime mode from environment
+    const char *mode = getenv("OSMGR_MODE");
+    if (mode && strcmp(mode, "RL") == 0) {
+        setRLEnabled(true);
+        if (summary_path.empty()) summary_path = "results/raw/rl.summary.csv";
+        if (csv_path.empty()) csv_path = "results/raw/rl.csv";
+    } else {
+        setRLEnabled(false);
+        if (summary_path.empty()) summary_path = "results/raw/baseline.summary.csv";
+        if (csv_path.empty()) csv_path = "results/raw/baseline.csv";
+    }
+    const char *summary_env = getenv("OSMGR_SUMMARY");
+    if (summary_env) summary_path = summary_env;
+    const char *csv_env = getenv("OSMGR_CSV");
+    if (csv_env) csv_path = csv_env;
 
     // Load calibration → derive thresholds
     classifier.loadCalibration(Calibrator::CALIB_PATH);
@@ -56,6 +72,7 @@ MonitorManager::MonitorManager()
 MonitorManager::~MonitorManager() {
     stop();
     if (fifo_fd >= 0) { close(fifo_fd); fifo_fd = -1; }
+    if (csv_fp) { fclose(csv_fp); csv_fp = nullptr; }
 }
 
 // ── Mode pin / auto ───────────────────────────────────────────────────────
@@ -351,6 +368,7 @@ void MonitorManager::readerLoop() {
         
         // Output real-time state down FIFO to external RL pipeline
         // Reward function: IPC - beta*power. Penalize freq boost if mem/io bound.
+        adaptive_policy.setRLEnabled(rl_enabled);
         SysAction action = adaptive_policy.decidePolicy(state);
         last_action = action.name;
         double ipc_n   = state.ipc;
@@ -361,9 +379,7 @@ void MonitorManager::readerLoop() {
 
         // Base performance vs power
 
-        double score = (4.0*ipc_n * util_n) - 0.02 * power_n-3.5*mem_n-2.5*io_n;
-        printf("mem_n: %lf io_n: %lf ", mem_n, io_n);
-        printf("mul is %lf",ipc_n * util_n);
+        double score = (4.5*ipc_n * util_n) - 0.02 * power_n-3.0*mem_n-2.5*io_n;
         double reward = 2*(score - last_score)+score;
         last_score = score;
 
@@ -392,6 +408,14 @@ void MonitorManager::readerLoop() {
             
         adaptive_policy.sendStateToRL(state, reward);
 
+        // Collect sample-level statistics for summary output.
+        run_end_time = get_time_seconds();
+        if (power >= 0.0) sum_power += power;
+        sum_ipc += ipc;
+        sum_util += util;
+        sum_freq += avg_mhz;
+        sample_count += 1;
+
         {
             std::lock_guard<std::mutex> lk(mode_mutex);
             if (is_pinned) {
@@ -406,7 +430,25 @@ void MonitorManager::readerLoop() {
                 governor.apply(mode); // baseline
                 adaptive_policy.applyAction(action);
                 last_committed = mode;
+                action_changes += 1;
             }
+        }
+
+        // Write per-sample data to CSV
+        if (csv_fp && csv_header_written) {
+            double elapsed = run_end_time - run_start_time;
+            fprintf(csv_fp, "%.1f,%.1f,%.3f,%.1f,%.1f,%.1f,%.2f,%s,%s,%d\n",
+                    elapsed,
+                    util,
+                    ipc,
+                    iowait,
+                    cache_misses,
+                    avg_mhz,
+                    power,
+                    last_action.c_str(),
+                    action.source.c_str(),
+                    (int)rl_enabled);
+            fflush(csv_fp);
         }
 
         std::string mode_str = modeToString(mode);
@@ -452,7 +494,6 @@ void MonitorManager::readerLoop() {
             ssize_t n = write(fifo_fd, json.c_str(), json.size());
             if (n < 0 && errno != EAGAIN && errno != EPIPE) {
                 // Just log the error, don't crash the monitor loop just because GUI disconnected or buffer full
-                // printf("[monitor] FIFO write failed (errno=%d)\n", errno);
             }
         }
 
@@ -462,8 +503,26 @@ void MonitorManager::readerLoop() {
 }
 
 // ── start / stop ──────────────────────────────────────────────────────────
+void MonitorManager::setRLEnabled(bool enabled) {
+    rl_enabled = enabled;
+    adaptive_policy.setRLEnabled(enabled);
+}
+
+bool MonitorManager::isRLEnabled() const {
+    return rl_enabled;
+}
+
 void MonitorManager::start() {
     if (running) return;
+
+    run_start_time = get_time_seconds();
+    run_end_time = run_start_time;
+    sum_power = 0.0;
+    sum_ipc = 0.0;
+    sum_util = 0.0;
+    sum_freq = 0.0;
+    sample_count = 0;
+    action_changes = 0;
 
     if (fifo_fd < 0) {
         // Open with O_RDWR so it doesn't block waiting for a Python reader,
@@ -472,6 +531,21 @@ void MonitorManager::start() {
         if (fifo_fd < 0) {
             perror("[monitor] FIFO open failed");
             return;
+        }
+    }
+
+    // Open CSV file for raw per-sample logging
+    if (!csv_path.empty()) {
+        std::string csv_dir = csv_path.substr(0, csv_path.find_last_of('/'));
+        if (!csv_dir.empty()) {
+            std::string mkdir_cmd = "mkdir -p " + csv_dir;
+            system(mkdir_cmd.c_str());
+        }
+        csv_fp = fopen(csv_path.c_str(), "w");
+        if (csv_fp) {
+            fprintf(csv_fp, "timestamp,util,ipc,iowait,mpki,freq,power,action,source,rl_enabled\n");
+            fflush(csv_fp);
+            csv_header_written = true;
         }
     }
 
@@ -496,5 +570,42 @@ void MonitorManager::stop() {
     running = false;
     if (reader_thread.joinable()) reader_thread.join();
     closePerfCounters();
+
+    // Close CSV file if open
+    if (csv_fp) {
+        fclose(csv_fp);
+        csv_fp = nullptr;
+    }
+
+    if (!summary_path.empty() && sample_count > 0) {
+        std::string summary_dir;
+        size_t pos = summary_path.find_last_of('/');
+        if (pos != std::string::npos) summary_dir = summary_path.substr(0, pos);
+        if (!summary_dir.empty()) {
+            std::string mkdir_cmd = "mkdir -p " + summary_dir;
+            system(mkdir_cmd.c_str());
+        }
+        FILE *f = fopen(summary_path.c_str(), "w");
+        if (f) {
+            double duration = run_end_time - run_start_time;
+            double avg_power = sample_count ? sum_power / sample_count : 0.0;
+            double avg_ipc = sample_count ? sum_ipc / sample_count : 0.0;
+            double avg_util = sample_count ? sum_util / sample_count : 0.0;
+            double avg_freq = sample_count ? sum_freq / sample_count : 0.0;
+            double actions_per_min = duration > 0 ? (double)action_changes / (duration / 60.0) : 0.0;
+            fprintf(f, "run_name,mode,duration_s,avg_power_w,avg_ipc,avg_util,avg_freq_mhz,actions_per_minute\n");
+            fprintf(f, "%s,%s,%.1f,%.3f,%.3f,%.3f,%.1f,%.2f\n",
+                    rl_enabled ? "rl" : "baseline",
+                    rl_enabled ? "RL" : "BASELINE",
+                    duration,
+                    avg_power,
+                    avg_ipc,
+                    avg_util,
+                    avg_freq,
+                    actions_per_min);
+            fclose(f);
+        }
+    }
+
     printf("[monitor] Stopped\n");
 }

@@ -34,7 +34,7 @@ $(TARGET): $(OBJ)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 setup:
-	mkdir -p config results
+	mkdir -p config results results/raw
 	[ -p $(FIFO_MONITOR) ] || mkfifo $(FIFO_MONITOR)
 	[ -p $(FIFO_CONTROL) ] || mkfifo $(FIFO_CONTROL)
 	[ -p /tmp/state_fifo ] || mkfifo /tmp/state_fifo
@@ -56,11 +56,35 @@ run: all setup
 	RL_PID=$$!; \
 	sleep 2; \
 	echo "Starting C++ monitor..."; \
-	sudo ./$(TARGET); \
+	sudo env OSMGR_MODE=RL OSMGR_CSV=results/raw/rl.csv OSMGR_SUMMARY=results/raw/rl.summary.csv ./$(TARGET); \
 	echo "C++ exited, cleaning up..."; \
 	kill $$PYTHON_PID 2>/dev/null || true; \
 	kill $$RL_PID 2>/dev/null || true
 	rm -f $(OBJ) $(TARGET)
+
+run-baseline: all setup
+	@echo "Starting Python GUI..."
+	@python3 interface/monitor.py & \
+	PYTHON_PID=$$!; \
+	sleep 2; \
+	echo "Starting C++ monitor in baseline mode..."; \
+	sudo env OSMGR_MODE=BASELINE OSMGR_CSV=results/raw/baseline.csv OSMGR_SUMMARY=results/raw/baseline.summary.csv ./$(TARGET); \
+	echo "C++ exited, cleaning up..."; \
+	kill $$PYTHON_PID 2>/dev/null || true
+
+run-rl: all setup
+	@echo "Starting Python GUI..."
+	@python3 interface/monitor.py & \
+	PYTHON_PID=$$!; \
+	echo "Starting RL Agent..."; \
+	python3 rl_agent.py & \
+	RL_PID=$$!; \
+	sleep 2; \
+	echo "Starting C++ monitor in RL mode..."; \
+	sudo env OSMGR_MODE=RL OSMGR_CSV=results/raw/rl.csv OSMGR_SUMMARY=results/raw/rl.summary.csv ./$(TARGET); \
+	echo "C++ exited, cleaning up..."; \
+	kill $$PYTHON_PID 2>/dev/null || true; \
+	kill $$RL_PID 2>/dev/null || true
 
 reset-rl:
 	@echo "Resetting RL Agent Q-Table..."

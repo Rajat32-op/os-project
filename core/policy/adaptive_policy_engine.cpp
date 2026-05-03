@@ -7,7 +7,7 @@
 #include <unistd.h>
 #include <sys/stat.h>
 
-AdaptivePolicyEngine::AdaptivePolicyEngine() : ema_util(0), ema_ipc(1.0), ema_io(0), ema_disk_io(0), ema_mem(0), cooldown_timer(0), state_fifo_fd(-1), action_fifo_fd(-1), last_reward(0) {
+AdaptivePolicyEngine::AdaptivePolicyEngine() : ema_util(0), ema_ipc(1.0), ema_io(0), ema_disk_io(0), ema_mem(0), cooldown_timer(0), state_fifo_fd(-1), action_fifo_fd(-1), last_reward(0), rl_enabled(false) {
     current_action = {"DO_NOTHING",100, "powersave", 0, false, 60, "mq-deadline", "BASELINE"};
     initFIFOs();
 }
@@ -23,7 +23,12 @@ void AdaptivePolicyEngine::initFIFOs() {
     action_fifo_fd = open("/tmp/action_fifo", O_RDONLY | O_NONBLOCK);
 }
 
+void AdaptivePolicyEngine::setRLEnabled(bool enabled) {
+    rl_enabled = enabled;
+}
+
 void AdaptivePolicyEngine::sendStateToRL(const SystemState& state, double reward) {
+    if (!rl_enabled) return;
     if (state_fifo_fd < 0) {
         state_fifo_fd = open("/tmp/state_fifo", O_WRONLY | O_NONBLOCK);
         if (state_fifo_fd < 0) return;
@@ -135,9 +140,9 @@ SysAction AdaptivePolicyEngine::decidePolicy(const SystemState& state) {
     SysAction next_action = current_action;
     bool changed = false;
 
-    // 1. Try to read from RL
+    // 1. Try to read from RL when enabled
     SysAction rl_action;
-    if (readActionFromRL(rl_action) && isActionSafe(rl_action, state.util)) {
+    if (rl_enabled && readActionFromRL(rl_action) && isActionSafe(rl_action, state.util)) {
         next_action = rl_action;
         changed = true;
     } else {

@@ -42,6 +42,7 @@ private:
     int state_fifo_fd;
     int action_fifo_fd;
     double last_reward;
+    bool rl_enabled;
     
     // Smooth input metrics to EMA
     void updateEMA(double util, double ipc, double iowait, double disk_io, double mem_bw);
@@ -63,6 +64,7 @@ public:
     
     // 5. RL Interface
     void initFIFOs();
+    void setRLEnabled(bool enabled);
     void sendStateToRL(const SystemState& state, double reward);
     bool readActionFromRL(SysAction& out_action);
     bool isActionSafe(const SysAction& action, double util);
