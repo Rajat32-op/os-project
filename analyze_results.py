@@ -106,19 +106,14 @@ def compare_runs(rows):
     power_delta = pct_change(baseline['avg_power_w'], rl['avg_power_w'])
     ipc_delta = pct_change(baseline['avg_ipc'], rl['avg_ipc'])
     util_delta = pct_change(baseline['avg_util'], rl['avg_util'])
-    throughput_delta = None
-    if baseline['throughput_mib_s'] and rl['throughput_mib_s']:
-        throughput_delta = pct_change(baseline['throughput_mib_s'], rl['throughput_mib_s'])
-    lines.append(f"Baseline average power: {baseline['avg_power_w']:.3f} W, RL average power: {rl['avg_power_w']:.3f} W.")
-    if power_delta != float('inf'):
-        lines.append(f"RL changed power by {power_delta:+.1f}% compared to baseline.")
-    lines.append(f"Baseline average IPC: {baseline['avg_ipc']:.3f}, RL average IPC: {rl['avg_ipc']:.3f}.")
-    lines.append(f"RL changed IPC by {ipc_delta:+.1f}% compared to baseline.")
-    if baseline['throughput_mib_s'] and rl['throughput_mib_s']:
-        lines.append(f"Baseline throughput: {baseline['throughput_mib_s']} MiB/s, RL throughput: {rl['throughput_mib_s']} MiB/s ({throughput_delta:+.1f}%).")
-    if baseline['latency_us'] and rl['latency_us']:
-        lat_delta = pct_change(baseline['latency_us'], rl['latency_us'])
-        lines.append(f"Baseline latency: {baseline['latency_us']} us, RL latency: {rl['latency_us']} us ({lat_delta:+.1f}%).")
+    throughput_delta = pct_change(baseline['throughput_mib_s'], rl['throughput_mib_s']) if baseline['throughput_mib_s'] and rl['throughput_mib_s'] else float('nan')
+    iops_delta = pct_change(baseline['iops'], rl['iops']) if baseline['iops'] and rl['iops'] else float('nan')
+    latency_delta = pct_change(baseline['latency_us'], rl['latency_us']) if baseline['latency_us'] and rl['latency_us'] else float('nan')
+    lines.append(f"Baseline average power: {baseline['avg_power_w']:.3f} W, RL average power: {rl['avg_power_w']:.3f} W, ({power_delta:+.1f}%).")
+    lines.append(f"Baseline average IPC: {baseline['avg_ipc']:.3f}, RL average IPC: {rl['avg_ipc']:.3f}, ({ipc_delta:+.1f}%).")
+    lines.append(f"Baseline throughput: {baseline['throughput_mib_s']} MiB/s, RL throughput: {rl['throughput_mib_s']} MiB/s ({throughput_delta:+.1f}%).")
+    lines.append(f"Baseline latency: {baseline['latency_us']} us, RL latency: {rl['latency_us']} us ({latency_delta:+.1f}%).")
+    lines.append(f"Baseline IOPS: {baseline['iops']}, RL IOPS: {rl['iops']} ({iops_delta:+.1f}%).")
     return lines
 
 
