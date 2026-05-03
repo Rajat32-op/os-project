@@ -14,7 +14,8 @@ EventController::~EventController() {
 }
 
 void EventController::listenLoop() {
-    int fd = open("config/event_pipe", O_RDONLY);
+    // Use O_RDWR so open() doesn't block waiting for a writer.
+    int fd = open("config/event_pipe", O_RDWR | O_NONBLOCK);
     if (fd < 0) {
         printf("[event] Couldn't open event_pipe\n");
         return;
@@ -22,10 +23,16 @@ void EventController::listenLoop() {
 
     MonitorManager monitor_manager;
     char buffer[512];
+    
+    // Auto-start monitoring immediately so it doesn't wait for GUI
+    monitor_manager.start();
 
     while (running) {
         int n = read(fd, buffer, sizeof(buffer) - 1);
-        if (n <= 0) continue;
+        if (n <= 0) {
+            usleep(100000); // Sleep for 100ms if no data to avoid CPU spin
+            continue;
+        }
 
         buffer[n] = '\0';
         std::string msg(buffer);

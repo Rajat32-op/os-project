@@ -21,6 +21,7 @@ int main(int argc, char *argv[]) {
     std::cout << "Main started\n";
     signal(SIGINT,  handle_signal);
     signal(SIGTERM, handle_signal);
+    signal(SIGPIPE, SIG_IGN); // Prevent crash if writing to pipe with no reader
 
     EventController event_controller;
     std::cout << "Starting monitor...\n";

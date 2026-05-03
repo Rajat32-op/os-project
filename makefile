@@ -17,13 +17,13 @@ FIFO_MONITOR = config/monitor_pipe
 FIFO_CONTROL = config/event_pipe
 
 HEADERS = core/monitor/monitor_manager.h \
-          core/controllers/event_controller.h \
-          core/classifier/classifier.h \
-          core/calibrator/calibrator.h \
-          core/policy/governor.h \
-          core/policy/adaptive_policy_engine.h
+	  core/controllers/event_controller.h \
+	  core/classifier/classifier.h \
+	  core/calibrator/calibrator.h \
+	  core/policy/governor.h \
+	  core/policy/adaptive_policy_engine.h
 
-.PHONY: all clean run setup install
+.PHONY: all clean run setup install reset-rl
 
 all: $(TARGET)
 
@@ -35,27 +35,34 @@ $(TARGET): $(OBJ)
 
 setup:
 	mkdir -p config results
-
 	[ -p $(FIFO_MONITOR) ] || mkfifo $(FIFO_MONITOR)
 	[ -p $(FIFO_CONTROL) ] || mkfifo $(FIFO_CONTROL)
+	[ -p /tmp/state_fifo ] || mkfifo /tmp/state_fifo
+	[ -p /tmp/action_fifo ] || mkfifo /tmp/action_fifo
 
-install: all setup
 	@echo "--- Setting up sudoers entry ---"
 	echo "$$USER ALL=(ALL) NOPASSWD: $(CURDIR)/$(TARGET)" | \
 	sudo tee /etc/sudoers.d/os_manager
 	sudo chmod 440 /etc/sudoers.d/os_manager
 	@echo "--- Running baseline calibration (keep system IDLE for 10s) ---"
-	sudo ./$(TARGET) --calibrate
+	if [ ! -f config/calibration.json ]; then sudo ./$(TARGET) --calibrate; fi
 
 run: all setup
 	@echo "Starting Python GUI..."
 	@python3 interface/monitor.py & \
 	PYTHON_PID=$$!; \
+	echo "Starting RL Agent..."; \
+	python3 rl_agent.py & \
+	RL_PID=$$!; \
 	sleep 2; \
 	echo "Starting C++ monitor..."; \
 	sudo ./$(TARGET); \
-	echo "C++ exited, closing GUI..."; \
-	kill $$PYTHON_PID 2>/dev/null || true
-
-clean:
+	echo "C++ exited, cleaning up..."; \
+	kill $$PYTHON_PID 2>/dev/null || true; \
+	kill $$RL_PID 2>/dev/null || true
 	rm -f $(OBJ) $(TARGET)
+
+reset-rl:
+	@echo "Resetting RL Agent Q-Table..."
+	rm -f q_table.json
+	@echo "Done. RL Agent will start fresh next run."

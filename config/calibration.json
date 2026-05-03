@@ -1,7 +1,7 @@
 {
-  "baseline_util":  2.0755,
-  "baseline_ctxsw": 5633.0000,
-  "baseline_ipc":   0.8545,
-  "calibrated_at": "2026-03-24T11:01:25",
+  "baseline_util":  15.8750,
+  "baseline_ctxsw": 3390.0000,
+  "baseline_ipc":   1.6442,
+  "calibrated_at": "2026-05-02T14:14:51",
   "num_cpus": 16
 }

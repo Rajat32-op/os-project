@@ -9,6 +9,7 @@
 #include "../policy/governor.h"
 #include "../policy/adaptive_policy_engine.h"
 
+
 struct PerfCounters {
     int fd_cycles;
     int fd_instrs;
@@ -30,12 +31,14 @@ private:
     std::vector<CoreStat> prev_core;
     CoreStat              prev_total;
     long                  prev_ctxt;
+    long long             prev_pg_io;
     bool                  first_sample;
 
     // RAPL
     std::string rapl_path;
     long long   prev_energy_uj;
     bool        rapl_available;
+    double prev_time;
 
     // Classifier + pin state
     Classifier  classifier;
@@ -45,6 +48,8 @@ private:
     std::mutex  mode_mutex;
     bool        is_pinned;
     CpuMode     pinned_mode;
+    std::string last_action;
+    double last_score;
 
     void   readerLoop();
     bool   readProcStat(double &util, double &iowait, double &ctxsw,
@@ -52,6 +57,7 @@ private:
     bool   readFreqs(double &avg_mhz, std::vector<double> &core_mhz);
     double readTemperature();
     double readIPC(double &cache_misses);
+    double readDiskIO();
     double readRAPL();
     bool   openPerfCounters();
     void   closePerfCounters();

@@ -13,8 +13,15 @@
 #include <cstring>
 #include <string>
 #include <vector>
+#include<syscall.h>
+#include <time.h>
 
 // ── Helpers ───────────────────────────────────────────────────────────────
+double get_time_seconds() {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec + ts.tv_nsec * 1e-9;
+}
 static int perf_event_open(struct perf_event_attr *attr, pid_t pid,
                            int cpu, int group_fd, unsigned long flags) {
     return (int)syscall(__NR_perf_event_open, attr, pid, cpu, group_fd, flags);
@@ -30,8 +37,8 @@ static std::string dtos(double v, int prec = 3) {
 MonitorManager::MonitorManager()
     : running(false), fifo_fd(-1), first_sample(true),
       prev_energy_uj(-1), rapl_available(false),
-      last_committed(CpuMode::IDLE),
-      is_pinned(false), pinned_mode(CpuMode::IDLE) {
+      last_committed(CpuMode::IDLE), prev_pg_io(0),
+      is_pinned(false), pinned_mode(CpuMode::IDLE),prev_time(-1.0),last_action("DO_NOTHING"),last_score(0.0) {
     num_cpus = (int)sysconf(_SC_NPROCESSORS_ONLN);
     if (num_cpus < 1) num_cpus = 1;
     memset(&prev_total, 0, sizeof(prev_total));
@@ -123,19 +130,31 @@ void MonitorManager::initRAPL() {
 
 double MonitorManager::readRAPL() {
     if (!rapl_available) return -1.0;
+
     FILE *f = fopen(rapl_path.c_str(), "r");
     if (!f) return -1.0;
+
     long long energy_uj = 0;
     int rc = fscanf(f, "%lld", &energy_uj);
     fclose(f);
     if (rc != 1) return -1.0;
+
+    double now = get_time_seconds(); // use clock_gettime or similar
     double watts = -1.0;
-    if (prev_energy_uj >= 0) {
-        long long delta = energy_uj - prev_energy_uj;
-        if (delta < 0) delta = 0;
-        watts = delta / 1e6;
+
+    if (prev_energy_uj >= 0 && prev_time >= 0) {
+        long long delta_energy = energy_uj - prev_energy_uj;
+        if (delta_energy < 0) delta_energy = 0;
+
+        double delta_time = now - prev_time;
+        if (delta_time > 0) {
+            watts = (delta_energy / 1e6) / delta_time;
+        }
     }
+
     prev_energy_uj = energy_uj;
+    prev_time = now;
+
     return watts;
 }
 
@@ -259,6 +278,29 @@ double MonitorManager::readTemperature() {
     return best;
 }
 
+// ── readDiskIO ─────────────────────────────────────────────────────────────
+double MonitorManager::readDiskIO() {
+    FILE *f = fopen("/proc/vmstat", "r");
+    if (!f) return 0.0;
+    char line[256];
+    long long pg_in = 0, pg_out = 0;
+    while (fgets(line, sizeof(line), f)) {
+        if (strncmp(line, "pgpgin ", 7) == 0) {
+            sscanf(line + 7, "%lld", &pg_in);
+        } else if (strncmp(line, "pgpgout ", 8) == 0) {
+            sscanf(line + 8, "%lld", &pg_out);
+        }
+    }
+    fclose(f);
+    long long current_total = pg_in + pg_out;
+    double delta = 0.0;
+    if (prev_pg_io > 0 && current_total >= prev_pg_io) {
+        delta = (double)(current_total - prev_pg_io) / 1024.0; // MB
+    }
+    prev_pg_io = current_total;
+    return delta; // MB per ~interval (500ms -> times 2 for MB/s conceptually if needed, but relative scales are fine)
+}
+
 // ── readIPC ───────────────────────────────────────────────────────────────
 double MonitorManager::readIPC(double &cache_misses) {
     long long tc = 0, ti = 0, tm = 0;
@@ -273,8 +315,8 @@ double MonitorManager::readIPC(double &cache_misses) {
         ioctl(pf.fd_instrs, PERF_EVENT_IOC_RESET, 0);
         if (pf.fd_cache_misses >= 0) ioctl(pf.fd_cache_misses, PERF_EVENT_IOC_RESET, 0);
     }
-    // simple metric for memory proxy, scaled arbitrarily
-    cache_misses = (double)tm / 1000.0;
+    // Report MPKI (Misses Per Kilo Instruction)
+    cache_misses = (ti > 0) ? ((double)tm * 1000.0) / ti : 0.0;
     return (tc > 0) ? (double)ti/tc : 0.0;
 }
 
@@ -290,6 +332,7 @@ void MonitorManager::readerLoop() {
         readFreqs(avg_mhz, core_mhz);
 
         double temp = readTemperature();
+        double disk_io = readDiskIO();
 
         double cache_misses = 0;
         double ipc   = readIPC(cache_misses);
@@ -303,11 +346,52 @@ void MonitorManager::readerLoop() {
         CpuMode mode;
         bool    is_auto;
         
-        // 1. Classify workload through new controller
-        WorkloadDict wl = adaptive_policy.classifyWorkload(util, iowait, cache_misses);
-        // Estimate dummy freq for now (pass true avg freq)
-        SysAction action = adaptive_policy.decidePolicy(wl, avg_mhz);
+        // 1. Process state through new controller
+        SystemState state = adaptive_policy.processState(util, ipc, iowait, disk_io, cache_misses, avg_mhz, temp, power, ctxsw);
         
+        // Output real-time state down FIFO to external RL pipeline
+        // Reward function: IPC - beta*power. Penalize freq boost if mem/io bound.
+        SysAction action = adaptive_policy.decidePolicy(state);
+        last_action = action.name;
+        double ipc_n   = state.ipc;
+        double util_n  = state.util/100.0;
+        double power_n = state.power;
+        double io_n    = state.iowait / 100.0;
+        double mem_n   = state.mem_bw / 50.0;
+
+        // Base performance vs power
+
+        double score = (4.0*ipc_n * util_n) - 0.02 * power_n-3.5*mem_n-2.5*io_n;
+        printf("mem_n: %lf io_n: %lf ", mem_n, io_n);
+        printf("mul is %lf",ipc_n * util_n);
+        double reward = 2*(score - last_score)+score;
+        last_score = score;
+
+        // --- Context-aware penalties ---
+
+        // 1. CPU-heavy → penalize low-performance modes
+        if (util_n > 0.6 && ipc_n > 0.5) {
+            if (last_action == "POWERSAVE_50") reward -= 1.0;
+        }
+
+        // 2. Memory-bound → penalize aggressive CPU boosting
+        if (mem_n > 0.5 && ipc_n < 0.5) {
+            if (last_action == "PERF_100") reward -= 1.0;
+        }
+
+        // 3. IO-bound → penalize CPU tuning
+        if (io_n > 0.4) {
+            if (last_action == "PERF_100") reward -= 1.0;
+        }
+
+        // 4. Idle → penalize wasting power
+        if (util_n < 0.2) {
+            if (last_action == "PERF_100") reward -= 1.0;
+        }
+
+            
+        adaptive_policy.sendStateToRL(state, reward);
+
         {
             std::lock_guard<std::mutex> lk(mode_mutex);
             if (is_pinned) {
@@ -318,8 +402,6 @@ void MonitorManager::readerLoop() {
                 is_auto = true;
             }
 
-            // Optional: apply baseline controller governor vs rule-based governor
-            // We use standard governor class but log the closed loop engine decision
             if (mode != last_committed || action.governor != governor.current()) {
                 governor.apply(mode); // baseline
                 adaptive_policy.applyAction(action);
@@ -328,18 +410,15 @@ void MonitorManager::readerLoop() {
         }
 
         std::string mode_str = modeToString(mode);
+        std::string dom_wl = "UNKNOWN";
+
         int streak     = classifier.getStreak();
-        int confidence = classifier.CONFIDENCE_N;
         std::string gov = governor.current();
 
-        printf("[%s%s] Util:%.1f%% MHz:%.0f IPC:%.3f "
-               "IOWait:%.1f%% CtxSw:%.0f/s Temp:%.1f°C Power:%.1fW Miss:%.1fk"
-               " Gov:%s | candidate:%s streak:%d/%d\n",
-               mode_str.c_str(), is_auto ? "" : "(PINNED)",
-               util, avg_mhz, ipc, iowait, ctxsw, temp, power, cache_misses,
-               gov.c_str(),
-               modeToString(classifier.getCandidate()).c_str(),
-               streak, confidence);
+        printf("[%s] Source:%s Gov:%s Util:%.1f%% IPC:%.2f MPKI:%.1f IO:%.1f\n",
+               is_auto ? "AUTO  " : "PINNED",
+               action.source.c_str(),
+               gov.c_str(), util, ipc, cache_misses, disk_io);
 
         // ── Build JSON ────────────────────────────────────────────────────
         std::string json = "{";
@@ -351,7 +430,8 @@ void MonitorManager::readerLoop() {
         json += "\"temp\":"   + dtos(temp,     1) + ",";
         json += "\"power\":"  + dtos(power,    2) + ",";
         json += "\"mode\":\""  + mode_str + "\",";
-        json += "\"workload\":\"Idl:" + dtos(wl.idle*100, 0) + "% C:" + dtos(wl.compute*100, 0) + "% I:" + dtos(wl.io*100, 0) + "% M:" + dtos(wl.memory*100, 0) + "%\",";
+        json += "\"source\":\"" + action.source + "\",";
+        json += "\"reward\":" + dtos(reward, 3) + ",";
         json += "\"auto\":"    + std::string(is_auto ? "true" : "false") + ",";
         json += "\"streak\":"  + std::to_string(streak) + ",";
         json += "\"gov\":\""   + gov + "\",";
@@ -370,10 +450,9 @@ void MonitorManager::readerLoop() {
 
         if (fifo_fd >= 0) {
             ssize_t n = write(fifo_fd, json.c_str(), json.size());
-            if (n < 0) {
-                printf("[monitor] FIFO write failed (errno=%d)\n", errno);
-                running = false;
-                break;
+            if (n < 0 && errno != EAGAIN && errno != EPIPE) {
+                // Just log the error, don't crash the monitor loop just because GUI disconnected or buffer full
+                // printf("[monitor] FIFO write failed (errno=%d)\n", errno);
             }
         }
 
@@ -387,7 +466,9 @@ void MonitorManager::start() {
     if (running) return;
 
     if (fifo_fd < 0) {
-        fifo_fd = open("config/monitor_pipe", O_WRONLY);
+        // Open with O_RDWR so it doesn't block waiting for a Python reader,
+        // and O_NONBLOCK to prevent writes from blocking if the buffer fills
+        fifo_fd = open("config/monitor_pipe", O_RDWR | O_NONBLOCK);
         if (fifo_fd < 0) {
             perror("[monitor] FIFO open failed");
             return;
