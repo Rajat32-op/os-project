@@ -1,0 +1,2 @@
+run_name,mode,duration_s,avg_power_w,avg_ipc,avg_util,avg_freq_mhz,actions_per_minute
+rl,RL,59.8,10.786,1.910,44.540,1256.6,40.10

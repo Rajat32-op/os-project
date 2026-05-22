@@ -8,7 +8,7 @@ FINAL_TXT = Path('results/final_summary.txt')
 
 FIO_PATTERN = re.compile(r'\b([0-9]+\.?[0-9]*)\s*(MiB|GiB|kB|KB|B)/s|bw=([0-9.]+)([KMG]i?B)/s|lat.*=\s*([0-9.]+)\s*us|IOPS=([0-9.]+)', re.IGNORECASE)
 
-
+cnt=0
 
 def parse_csv(path: Path):
     rows = []
@@ -114,6 +114,18 @@ def compare_runs(rows):
     lines.append(f"Baseline throughput: {baseline['throughput_mib_s']} MiB/s, RL throughput: {rl['throughput_mib_s']} MiB/s ({throughput_delta:+.1f}%).")
     lines.append(f"Baseline latency: {baseline['latency_us']} us, RL latency: {rl['latency_us']} us ({latency_delta:+.1f}%).")
     lines.append(f"Baseline IOPS: {baseline['iops']}, RL IOPS: {rl['iops']} ({iops_delta:+.1f}%).")
+    global cnt
+    if(power_delta<0):
+        cnt+=1
+    if(ipc_delta>0):
+        cnt+=1
+    if(throughput_delta>0):
+        cnt+=1
+    if(latency_delta<0):
+        cnt+=1
+    if(iops_delta>0):
+        cnt+=1
+
     return lines
 
 
@@ -143,6 +155,7 @@ def main():
     FINAL_TXT.parent.mkdir(parents=True, exist_ok=True)
     FINAL_TXT.write_text('\n'.join(final_lines) + '\n')
     print(f'Summary written to {SUMMARY_CSV} and {FINAL_TXT}')
+    print(cnt,end='')
 
 
 if __name__ == '__main__':

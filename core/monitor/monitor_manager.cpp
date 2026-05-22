@@ -373,14 +373,15 @@ void MonitorManager::readerLoop() {
         last_action = action.name;
         double ipc_n   = state.ipc;
         double util_n  = state.util/100.0;
-        double power_n = state.power;
+        double power_n = state.power/30.0;
         double io_n    = state.iowait / 100.0;
         double mem_n   = state.mem_bw / 50.0;
+        double freq_n  = state.mhz / 3500.0;
 
         // Base performance vs power
 
-        double score = (12.0*ipc_n * util_n) - 0.01 * power_n-4.0*mem_n-3.5*io_n;
-        double reward = 2*(score - last_score)+score;
+        double score = (14.0*ipc_n * util_n*freq_n)/(0.3+power_n) - 0.5*mem_n*(1-ipc_n)-0.5*io_n*(1-util_n);
+        double reward = (score - last_score);
         last_score = score;
 
         // --- Context-aware penalties ---

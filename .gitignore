@@ -4,4 +4,3 @@ os_manager
 *.out
 .vscode
 .venv
-results
