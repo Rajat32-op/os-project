@@ -1,88 +1,141 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-DURATION=${1:-60}
-WORKLOAD_CMD=${2:-}
 BASELINE_SUMMARY="results/raw/baseline.summary.csv"
 RL_SUMMARY="results/raw/rl.summary.csv"
 BASELINE_CSV="results/raw/baseline.csv"
 RL_CSV="results/raw/rl.csv"
-BASELINE_WORKLOAD_LOG="results/raw/baseline.workload.txt"
-RL_WORKLOAD_LOG="results/raw/rl.workload.txt"
 
 mkdir -p results/raw
+
 make all setup
 
-function cleanup() {
+cleanup() {
     pkill -f "sudo ./os_manager" 2>/dev/null || true
     pkill -f "python3 rl_agent.py" 2>/dev/null || true
-    if [[ -n "${WORKLOAD_PID-}" ]]; then
-        kill "$WORKLOAD_PID" 2>/dev/null || true
-    fi
 }
 trap cleanup EXIT
 
-# Helper to run a workload for a specific duration and log output
-run_workload_for_duration() {
-    local duration=$1
-    local output_file=$2
-    local cmd=$3
-    
-    if [[ -z "$cmd" ]]; then
-        echo "[workload] No workload command specified, skipping workload"
-        return 0
-    fi
-    
-    echo "[workload] Starting: $cmd (duration: ${duration}s, output: $output_file)"
-    bash -c "$cmd" > "$output_file" 2>&1 &
-    local pid=$!
-    
-    sleep "$duration"
-    kill "$pid" 2>/dev/null || true
-    wait "$pid" 2>/dev/null || true
-    echo "[workload] Finished, output saved to $output_file"
+run_workloads() {
+
+    echo "===== IDLE ====="
+    sleep 60
+
+    echo "===== CPU ====="
+    stress-ng --cpu 6 --timeout 60s
+
+    echo "===== MEMORY ====="
+    stress-ng --vm 4 --vm-bytes 75% --timeout 60s
+
+    echo "===== IO ====="
+    fio \
+      --name=randread \
+      --filename=/tmp/testfile \
+      --size=1G \
+      --bs=4k \
+      --rw=randread \
+      --iodepth=32 \
+      --runtime=60 \
+      --time_based
+
+    rm -f /tmp/testfile
+
+    echo "===== MIXED ====="
+
+    stress-ng --cpu 4 --timeout 60s &
+    CPU_PID=$!
+
+    stress-ng --vm 2 --vm-bytes 70% --timeout 60s &
+    MEM_PID=$!
+
+    wait $CPU_PID
+    wait $MEM_PID
+
+    echo "===== WORKLOADS COMPLETE ====="
 }
 
-echo "Running baseline for ${DURATION}s..."
-run_workload_for_duration "$DURATION" "$BASELINE_WORKLOAD_LOG" "$WORKLOAD_CMD" &
-WORKLOAD_PID=$!
+reset_system() {
+    echo "[reset] Restoring default settings"
 
-sudo env OSMGR_MODE=BASELINE OSMGR_CSV="$BASELINE_CSV" OSMGR_SUMMARY="$BASELINE_SUMMARY" ./os_manager &
+    sudo cpupower frequency-set -g schedutil >/dev/null 2>&1 || true
+
+    echo 60 | sudo tee /proc/sys/vm/swappiness >/dev/null
+
+    if [[ -f /sys/block/sda/queue/scheduler ]]; then
+        echo mq-deadline | sudo tee /sys/block/sda/queue/scheduler >/dev/null
+    fi
+
+    sleep 5
+}
+
+########################################
+# BASELINE
+########################################
+
+echo ""
+echo "=============================="
+echo "BASELINE RUN"
+echo "=============================="
+
+reset_system
+
+sudo env \
+OSMGR_MODE=BASELINE \
+OSMGR_CSV="$BASELINE_CSV" \
+OSMGR_SUMMARY="$BASELINE_SUMMARY" \
+./os_manager &
 OS_PID=$!
 
-wait "$WORKLOAD_PID" 2>/dev/null || true
-sleep 2
+sleep 3
+
+run_workloads
+
+sleep 5
+
 kill "$OS_PID" 2>/dev/null || true
 wait "$OS_PID" 2>/dev/null || true
 
-echo "Running RL-enabled for ${DURATION}s..."
-run_workload_for_duration "$DURATION" "$RL_WORKLOAD_LOG" "$WORKLOAD_CMD" &
-WORKLOAD_PID=$!
+########################################
+# RL
+########################################
+
+echo ""
+echo "=============================="
+echo "RL RUN"
+echo "=============================="
+
+reset_system
 
 python3 rl_agent.py &
 RL_PID=$!
-sleep 2
 
-sudo env OSMGR_MODE=RL OSMGR_CSV="$RL_CSV" OSMGR_SUMMARY="$RL_SUMMARY" ./os_manager &
+sleep 3
+
+sudo env \
+OSMGR_MODE=RL \
+OSMGR_CSV="$RL_CSV" \
+OSMGR_SUMMARY="$RL_SUMMARY" \
+./os_manager &
 OS_PID=$!
 
-wait "$WORKLOAD_PID" 2>/dev/null || true
-sleep 2
+sleep 3
+
+run_workloads
+
+sleep 5
+
 kill "$OS_PID" 2>/dev/null || true
 kill "$RL_PID" 2>/dev/null || true
+
 wait "$OS_PID" 2>/dev/null || true
 wait "$RL_PID" 2>/dev/null || true
 
 echo ""
-echo "Comparison runs complete."
-echo "Results:"
-echo "  Baseline summary: $BASELINE_SUMMARY"
-echo "  RL summary:       $RL_SUMMARY"
-echo "  Baseline raw data: $BASELINE_CSV"
-echo "  RL raw data:       $RL_CSV"
-if [[ -n "$WORKLOAD_CMD" ]]; then
-    echo "  Baseline workload log: $BASELINE_WORKLOAD_LOG"
-    echo "  RL workload log:       $RL_WORKLOAD_LOG"
-fi
+echo "================================="
+echo "COMPARISON COMPLETE"
+echo "================================="
+echo "Baseline summary: $BASELINE_SUMMARY"
+echo "RL summary:       $RL_SUMMARY"
 echo ""
-echo "Run: python3 analyze_results.py"
+echo "Run:"
+echo "python3 analyze_results.py"

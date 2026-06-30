@@ -380,9 +380,13 @@ void MonitorManager::readerLoop() {
 
         // Base performance vs power
 
-        double score = (14.0*ipc_n * util_n*freq_n)/(0.3+power_n) - 0.5*mem_n*(1-ipc_n)-0.5*io_n*(1-util_n);
-        double reward = (score - last_score);
-        last_score = score;
+       double perf =0.5*ipc_n +0.3*freq_n +0.2*util_n;
+
+        double cost =0.7*power_n +0.2*io_n +0.1*mem_n;
+
+        double score =perf - cost;
+
+        double reward = score;
 
         // --- Context-aware penalties ---
 

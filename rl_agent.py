@@ -5,11 +5,11 @@ import random
 import fcntl
 
 # Simple Q-learning online bandit parameters
-EPSILON = 0.2
-EPSILON_DECAY = 0.999
+EPSILON = 0
+EPSILON_DECAY = 0.99995
 MIN_EPSILON = 0.05
 ALPHA = 0.1
-GAMMA = 0.2 # since state space is mostly stateless bandit context right now
+GAMMA = 0.8 # since state space is mostly stateless bandit context right now
 
 # Discrete Actions we can send back
 ACTIONS = [
@@ -34,8 +34,10 @@ def discretize_state(data):
     b_ipc = get_bin(data.get('ipc', 0), 3.0) 
     b_mpki = get_bin(data.get('mpki', 0), 50.0)
     b_io = get_bin(data.get('iowait', 0), 100.0) 
+    b_power=get_bin(data.get('power',0),30.0)
+    b_freq = get_bin(data.get('mhz',0),3500.0)
     
-    return f"{b_u}_{b_ipc}_{b_mpki}_{b_io}"
+    return f"{b_u}_{b_ipc}_{b_mpki}_{b_io}_{b_power}_{b_freq}"
 
 class RLAgent:
     def __init__(self, state_fifo="/tmp/state_fifo", action_fifo="/tmp/action_fifo"):
@@ -112,21 +114,10 @@ class RLAgent:
         state_key = discretize_state(data)
         
         # Initialize state in Q-table if not present
-        if state_key not in self.q_table:
-            # Initialize using rule-based cutoffs for a smart baseline head start
-            b_u, b_ipc, b_mpki, b_io = state_key.split('_')
-            q_init = {a: random.uniform(0.0, 0.1) for a in ACTIONS}
-            
-            if b_io == '2' or int(b_io) > 0:
-                q_init["IO_BFQ"] = 1.0
-            elif b_mpki == '2' or (b_mpki == '1' and b_u == '2' and b_ipc == '0'):
-                q_init["SWAP_80"] = 1.0
-            elif b_u == '2':
-                q_init["PERF_100"] = 1.0
-            else:
-                q_init["POWERSAVE_50"] = 1.0
-                
-            self.q_table[state_key] = q_init
+        if state_key not in self.q_table:            
+            self.q_table[state_key] = {
+                a: 0.0 for a in ACTIONS
+            }
         
         # Q-Learning update
         if self.last_state and self.last_action:
@@ -145,12 +136,14 @@ class RLAgent:
         else:
             action = max(self.q_table[state_key], key=self.q_table[state_key].get)
             
+        prev_action = self.last_action
+
+        if prev_action and action != prev_action:
+            reward -= 0.05
+
         self.last_state = state_key
         self.last_action = action
-        # after choosing action
-        if self.last_action and action != self.last_action:
-            reward -= 0.05
-        # Log
+                # Log
         print(f"[RL] S:{state_key} R:{reward:.2f} eps:{self.epsilon:.3f} -> A:{action}")
         
         # Save model every 5 seconds

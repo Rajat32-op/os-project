@@ -1,9 +1,9 @@
 Running tests in  mode...
 Running cpu...
-stress-ng: info:  [4024395] setting to a 1 min run per stressor
-stress-ng: info:  [4024395] dispatching hogs: 6 cpu
-stress-ng: info:  [4024395] skipped: 0
-stress-ng: info:  [4024395] passed: 6: cpu (6)
-stress-ng: info:  [4024395] failed: 0
-stress-ng: info:  [4024395] metrics untrustworthy: 0
-stress-ng: info:  [4024395] successful run completed in 1 min
+stress-ng: info:  [1006097] setting to a 1 min run per stressor
+stress-ng: info:  [1006097] dispatching hogs: 6 cpu
+stress-ng: info:  [1006097] skipped: 0
+stress-ng: info:  [1006097] passed: 6: cpu (6)
+stress-ng: info:  [1006097] failed: 0
+stress-ng: info:  [1006097] metrics untrustworthy: 0
+stress-ng: info:  [1006097] successful run completed in 1 min

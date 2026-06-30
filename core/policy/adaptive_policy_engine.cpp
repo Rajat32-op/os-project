@@ -180,21 +180,61 @@ bool writeToFile(const std::string& path, const std::string& val) {
 
 void AdaptivePolicyEngine::applyAction(const SysAction& action) {
     std::cout << "[AdaptivePolicy] Applied action: FreqCap " << action.freq_cap_pct << "%"
-              << " Gov " << action.governor 
+              << " Gov " << action.governor
               << " P-Cores " << action.reserved_p_cores
               << " Swap " << action.swappiness << std::endl;
-              
-    // Write swappiness
-    writeToFile("/proc/sys/vm/swappiness", std::to_string(action.swappiness));
-    
-    // In a real multi-core environment with heterogenous architecture:
-    // P-Core / E-Core migration typically involves cpusets or sched_setaffinity.
-    // Log the cpuset instruction here instead of modifying global tree root to avoid disrupting user system.
-    if (action.migrate_to_e) {
-        std::cout << "[AdaptivePolicy] Action: migrating background tasks to E-cores" << std::endl;
+
+    // 1) Swappiness
+    if (!writeToFile("/proc/sys/vm/swappiness", std::to_string(action.swappiness))) {
+        std::cout << "[AdaptivePolicy] Warning: failed to write swappiness\n";
     }
-    
-    // CPU Governor (Handled already partially by governor class, but this sets explicitly)
-    // we would loop through /sys/devices/system/cpu/cpuX/cpufreq/scaling_governor
+
+    // Discover number of CPUs
+    int num_cpus = (int)sysconf(_SC_NPROCESSORS_ONLN);
+    if (num_cpus < 1) num_cpus = 1;
+
+    // 2) Apply governor per-CPU if specified
+    if (!action.governor.empty()) {
+        for (int cpu = 0; cpu < num_cpus; ++cpu) {
+            std::string gov_path = "/sys/devices/system/cpu/cpu" + std::to_string(cpu) + "/cpufreq/scaling_governor";
+            if (!writeToFile(gov_path, action.governor)) {
+                // CPU may be offline or path missing — skip silently but log debug
+                // std::cout << "[AdaptivePolicy] Warning: failed to write governor for cpu" << cpu << "\n";
+            }
+        }
+    }
+
+    // 3) Apply frequency cap (scaling_max_freq) by percentage of cpuinfo_max_freq
+    if (action.freq_cap_pct > 0 && action.freq_cap_pct <= 100) {
+        for (int cpu = 0; cpu < num_cpus; ++cpu) {
+            std::string info_path = "/sys/devices/system/cpu/cpu" + std::to_string(cpu) + "/cpufreq/cpuinfo_max_freq";
+            std::ifstream inf(info_path);
+            if (!inf.is_open()) continue;
+            long max_khz = 0;
+            inf >> max_khz;
+            inf.close();
+            if (max_khz <= 0) continue;
+            long cap_khz = (max_khz * action.freq_cap_pct) / 100;
+            std::string cap_path = "/sys/devices/system/cpu/cpu" + std::to_string(cpu) + "/cpufreq/scaling_max_freq";
+            if (!writeToFile(cap_path, std::to_string(cap_khz))) {
+                // scaling_max_freq may not be available or writable; skip
+            }
+        }
+    }
+
+    // 4) Try to apply IO scheduler (best-effort) for common device (sda)
+    if (!action.io_sched.empty()) {
+        if (!writeToFile("/sys/block/sda/queue/scheduler", action.io_sched)) {
+            // try generic fallback - don't treat as fatal
+        }
+    }
+
+    // 5) Migration hint / reserved P-cores
+    if (action.migrate_to_e) {
+        std::cout << "[AdaptivePolicy] Action: migrating background tasks to E-cores\n";
+    }
+    if (action.reserved_p_cores > 0) {
+        std::cout << "[AdaptivePolicy] Note: reserved_p_cores=" << action.reserved_p_cores << " (no-op)\n";
+    }
 }
 
